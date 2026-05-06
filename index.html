@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { MapPin, Navigation, Car, Zap, Bike, Truck, AlertCircle, Loader2, MonitorPlay, ChevronDown, ChevronUp, Clock, Phone, DollarSign } from 'lucide-react';
+import { MapPin, Navigation, Car, Zap, Bike, Truck, AlertCircle, Loader2, MonitorPlay, ChevronDown, ChevronUp, Map, Phone, DollarSign } from 'lucide-react';
 
 // 模擬澳門公共停車場的靜態資料庫 (包含預先查好的經緯度)
 // 在真實應用中，這些固定坐標可以與從 data.gov.mo 取得的實時車位數量進行合併
 const MACAU_CARPARKS_DB = [
-  { id: '1', name: '華士古達嘉馬花園停車場', lat: 22.196328, lng: 113.546123, phone: '2833 7676', hours: '24小時', fees: { day: 6, night: 3 } },
-  { id: '2', name: '栢寧停車場', lat: 22.193245, lng: 113.546512, phone: '2856 8388', hours: '24小時', fees: { day: 6, night: 3 } },
-  { id: '3', name: '亞馬喇前地停車場', lat: 22.189734, lng: 113.543456, phone: '2871 1818', hours: '24小時', fees: { day: 6, night: 3 } },
-  { id: '4', name: '塔石體育館停車場', lat: 22.198456, lng: 113.545678, phone: '2852 5684', hours: '24小時', fees: { day: 6, night: 3 } },
-  { id: '5', name: '中央公園停車場 (氹仔)', lat: 22.155678, lng: 113.554321, phone: '2885 1234', hours: '24小時', fees: { day: 6, night: 3 } },
-  { id: '6', name: '松山行人隧道停車場', lat: 22.197890, lng: 113.548901, phone: '2852 3311', hours: '24小時', fees: { day: 6, night: 3 } }
+  { id: '1', name: '華士古達嘉馬花園停車場', lat: 22.196328, lng: 113.546123, phone: '2833 7676', address: '東望洋街華士古達嘉馬花園地庫', imageUrl: 'https://images.unsplash.com/photo-1590674899484-d5640e854abe?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
+  { id: '2', name: '栢寧停車場', lat: 22.193245, lng: 113.546512, phone: '2856 8388', address: '馬六甲街', imageUrl: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
+  { id: '3', name: '亞馬喇前地停車場', lat: 22.189734, lng: 113.543456, phone: '2871 1818', address: '亞馬喇前地地庫', imageUrl: 'https://images.unsplash.com/photo-1573348722427-f1d6819fdf98?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
+  { id: '4', name: '塔石體育館停車場', lat: 22.198456, lng: 113.545678, phone: '2852 5684', address: '東望洋街塔石體育館地庫', imageUrl: 'https://images.unsplash.com/photo-1506521781263-d8422e82f27a?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
+  { id: '5', name: '中央公園停車場 (氹仔)', lat: 22.155678, lng: 113.554321, phone: '2885 1234', address: '氹仔哥英布拉街', imageUrl: 'https://images.unsplash.com/photo-1621293954908-907159247fc8?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
+  { id: '6', name: '松山行人隧道停車場', lat: 22.197890, lng: 113.548901, phone: '2852 3311', address: '羅理基博士大馬路', imageUrl: 'https://images.unsplash.com/photo-1474408886716-08726ddbeaa8?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } }
 ];
 
 export default function App() {
@@ -258,7 +258,7 @@ export default function App() {
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-2">搜尋範圍 (即時更新)</label>
             <div className="grid grid-cols-4 gap-2">
-              {[300, 500, 800, 1500].map(r => (
+              {[300, 500, 800, 1000].map(r => (
                 <button
                   key={r}
                   onClick={() => setRadius(r)}
@@ -340,9 +340,20 @@ export default function App() {
                       <strong className="text-emerald-700 text-lg">${park.currentFee}</strong> 
                       <span>/小時 <span className="text-xs text-gray-400">({park.feeLabel})</span></span>
                     </div>
-                    <div className="flex items-center space-x-2 mb-1.5">
-                      <Clock size={15} className="text-blue-500 shrink-0" />
-                      <span>營業時間：{park.hours}</span>
+                     <div className="flex flex-col space-y-1 mb-2 border-b border-gray-200 pb-2 text-xs">
+                        <div className="flex justify-between">
+                            <span className="text-gray-500">日間收費 (08:00-20:00)</span>
+                            <span className="font-medium">${park.fees.day}/小時</span>
+                        </div>
+                        <div className="flex justify-between">
+                            <span className="text-gray-500">夜間收費 (20:00-08:00)</span>
+                            <span className="font-medium">${park.fees.night}/小時</span>
+                        </div>
+                    </div>
+
+                    <div className="flex items-start space-x-2 mb-1.5 mt-2">
+                      <Map size={15} className="text-blue-500 shrink-0 mt-0.5" />
+                      <span className="leading-tight">地址：{park.address}</span>
                     </div>
                     <div className="flex items-center space-x-2">
                       <Phone size={15} className="text-orange-500 shrink-0" />
