@@ -1,446 +1,442 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { MapPin, Navigation, Car, Zap, Bike, Truck, AlertCircle, Loader2, MonitorPlay, ChevronDown, ChevronUp, Map, Phone, DollarSign } from 'lucide-react';
-
-// 模擬澳門公共停車場的靜態資料庫 (包含預先查好的經緯度)
-// 在真實應用中，這些固定坐標可以與從 data.gov.mo 取得的實時車位數量進行合併
-const MACAU_CARPARKS_DB = [
-  { id: '1', name: '華士古達嘉馬花園停車場', lat: 22.196328, lng: 113.546123, phone: '2833 7676', address: '東望洋街華士古達嘉馬花園地庫', imageUrl: 'https://images.unsplash.com/photo-1590674899484-d5640e854abe?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
-  { id: '2', name: '栢寧停車場', lat: 22.193245, lng: 113.546512, phone: '2856 8388', address: '馬六甲街', imageUrl: 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
-  { id: '3', name: '亞馬喇前地停車場', lat: 22.189734, lng: 113.543456, phone: '2871 1818', address: '亞馬喇前地地庫', imageUrl: 'https://images.unsplash.com/photo-1573348722427-f1d6819fdf98?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
-  { id: '4', name: '塔石體育館停車場', lat: 22.198456, lng: 113.545678, phone: '2852 5684', address: '東望洋街塔石體育館地庫', imageUrl: 'https://images.unsplash.com/photo-1506521781263-d8422e82f27a?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
-  { id: '5', name: '中央公園停車場 (氹仔)', lat: 22.155678, lng: 113.554321, phone: '2885 1234', address: '氹仔哥英布拉街', imageUrl: 'https://images.unsplash.com/photo-1621293954908-907159247fc8?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } },
-  { id: '6', name: '松山行人隧道停車場', lat: 22.197890, lng: 113.548901, phone: '2852 3311', address: '羅理基博士大馬路', imageUrl: 'https://images.unsplash.com/photo-1474408886716-08726ddbeaa8?auto=format&fit=crop&w=600&q=80', fees: { day: 6, night: 3 } }
-];
-
-export default function App() {
-  const [userLocation, setUserLocation] = useState(null);
-  const [radius, setRadius] = useState(500); // 預設 500 米
-  const [sortBy, setSortBy] = useState('distance'); // 排序方式 ('distance', 'spaces', 'fee')
-  const [vehicleType, setVehicleType] = useState('light'); // 駕駛車輛類型 ('light', 'ev', 'moto')
-  const [allParksData, setAllParksData] = useState([]); // 儲存所有已獲取資訊的停車場
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [activeNavId, setActiveNavId] = useState(null); // 控制顯示地圖選項狀態
-
-  // 模擬從 DSAT / 政府 API 獲取實時數據
-  // 未來可以替換為調用 data.gov.mo 的 API
-  const fetchRealtimeData = async () => {
-    // 這裡模擬網路延遲
-    return new Promise(resolve => {
-      setTimeout(() => {
-        resolve([
-          { id: '1', spaces: { light: 12, ev: 2, moto: 45, heavy: 0 } },
-          { id: '2', spaces: { light: 0, ev: 0, moto: 5, heavy: 0 } },
-          { id: '3', spaces: { light: 156, ev: 10, moto: 230, heavy: 0 } },
-          { id: '4', spaces: { light: 5, ev: 1, moto: 12, heavy: 0 } },
-          { id: '5', spaces: { light: 45, ev: 8, moto: 60, heavy: 0 } },
-          { id: '6', spaces: { light: 32, ev: 4, moto: 20, heavy: 0 } }
-        ]);
-      }, 800);
-    });
-  };
-
-  // Haversine 公式：根據經緯度計算兩個坐標點之間的直線距離（單位：米）
-  const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371e3; // 地球半徑 (米)
-    const φ1 = lat1 * Math.PI / 180;
-    const φ2 = lat2 * Math.PI / 180;
-    const Δφ = (lat2 - lat1) * Math.PI / 180;
-    const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-    const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-              Math.cos(φ1) * Math.cos(φ2) *
-              Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-
-    return R * c; 
-  };
-
-  // 取得現時收費邏輯
-  const getCurrentFeeInfo = (fees) => {
-    const hour = new Date().getHours();
-    const isDayTime = hour >= 8 && hour < 20; // 澳門公共停車場一般日間為 08:00 - 20:00
-    const currentFee = isDayTime ? fees.day : fees.night;
-    const timeLabel = isDayTime ? '日間 08:00-20:00' : '夜間 20:00-08:00';
-    return { fee: currentFee, label: timeLabel };
-  };
-
-  // 處理開啟導航地圖
-  const openMap = (type, lat, lng, name) => {
-    let url = '';
-    if (type === 'google') {
-      url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-    } else if (type === 'apple') {
-      url = `http://maps.apple.com/?daddr=${lat},${lng}`;
-    } else if (type === 'amap') {
-      url = `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=car`;
-    }
-    window.open(url, '_blank');
-  };
-
-  // 核心處理邏輯：根據傳入的經緯度搜尋附近停車場
-  const processParkingData = async (latitude, longitude) => {
-    setUserLocation({ lat: latitude, lng: longitude });
-    setActiveNavId(null); // 重新搜尋時重置導航選單
-    setLoading(true);
-    setError(null);
-
-    try {
-      // 1. 獲取實時車位數據
-      const realtimeData = await fetchRealtimeData();
-
-      // 2. 將實時數據與靜態坐標合併，計算距離與現時收費
-      const processedParks = MACAU_CARPARKS_DB.map(park => {
-        const distance = calculateDistance(latitude, longitude, park.lat, park.lng);
-        const realtimeInfo = realtimeData.find(d => d.id === park.id);
-        const spaces = realtimeInfo ? realtimeInfo.spaces : { light: 0, ev: 0, moto: 0, heavy: 0 };
-        const totalSpaces = spaces.light + spaces.ev + spaces.moto + spaces.heavy;
-        const currentFeeInfo = getCurrentFeeInfo(park.fees);
-
-        return {
-          ...park,
-          distance: Math.round(distance), // 四捨五入到米
-          spaces,
-          totalSpaces,
-          currentFee: currentFeeInfo.fee,
-          feeLabel: currentFeeInfo.label
-        };
-      });
-
-      setAllParksData(processedParks);
-    } catch (err) {
-      setError("獲取車位資訊時發生錯誤，請稍後再試。");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 獲取當前選擇車輛的對應車位數量
-  const getRelevantSpaces = (park, type) => {
-    if (type === 'light') return park.spaces.light;
-    if (type === 'ev') return park.spaces.ev;
-    if (type === 'moto') return park.spaces.moto;
-    return park.totalSpaces;
-  };
-
-  // 動態過濾與排序 (當半徑、排序方式、車輛類型或數據改變時自動即時重新計算)
-  const displayedParks = useMemo(() => {
-    if (!allParksData.length) return [];
-
-    // 1. 根據半徑過濾
-    let filtered = allParksData.filter(park => park.distance <= radius);
-
-    // 2. 根據排序選項與選擇的車輛類型排序
-    filtered.sort((a, b) => {
-      const aSpaces = getRelevantSpaces(a, vehicleType);
-      const bSpaces = getRelevantSpaces(b, vehicleType);
-      
-      const aEmpty = aSpaces === 0;
-      const bEmpty = bSpaces === 0;
-
-      // 智能邏輯：針對選擇的車型，沒車位的永遠排最後
-      if (aEmpty && !bEmpty) return 1;
-      if (!aEmpty && bEmpty) return -1;
-
-      // 有車位或同時沒車位時，根據選擇的排序方式
-      if (sortBy === 'distance') {
-        return a.distance - b.distance;
-      } else if (sortBy === 'spaces') {
-        return bSpaces - aSpaces; // 根據所選車型的車位數量排序
-      } else if (sortBy === 'fee') {
-        return a.currentFee - b.currentFee;
-      }
-      return 0;
-    });
-
-    return filtered;
-  }, [allParksData, radius, sortBy, vehicleType]);
-
-  // 真實 GPS 定位按鈕處理
-  const handleFindParking = () => {
-    if (!navigator.geolocation) {
-      setError("您的瀏覽器不支援地理位置功能，請使用「電腦測試」按鈕。");
-      return;
-    }
+<!DOCTYPE html>
+<html lang="zh-MO">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>澳門找車位小助手</title>
     
-    setLoading(true);
-    setError(null);
-    setAllParksData([]); // 修正：原為 setNearbyParks([])，現更新為 setAllParksData([])
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        processParkingData(position.coords.latitude, position.coords.longitude);
-      },
-      (err) => {
-        setError("無法獲取您的位置。若在電腦上測試，請點擊下方的「模擬測試」按鈕。");
-        setLoading(false);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-    );
-  };
-
-  // 模擬定位按鈕處理 (專為電腦測試設計)
-  const handleMockLocation = () => {
-    // 模擬位於澳門水坑尾/塔石一帶的坐標
-    const mockLat = 22.195000;
-    const mockLng = 113.545000;
+    <!-- 載入 Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
     
-    setAllParksData([]);
-    processParkingData(mockLat, mockLng);
-  };
+    <!-- 載入 FontAwesome 圖示庫 (替換原本的 Lucide 圖示，更適合直接在網頁使用) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- 載入 React 和 ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    
+    <!-- 載入 Babel 讓瀏覽器可以直接解析 JSX 代碼 -->
+    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
 
-  // 渲染單個車位標籤
-  const SpaceBadge = ({ icon: Icon, count, type, colorClass }) => (
-    <div className={`flex items-center space-x-1 px-2 py-1 rounded-md border ${count > 0 ? colorClass : 'bg-gray-100 text-gray-400 border-gray-200'}`}>
-      <Icon size={14} />
-      <span className="text-xs font-medium">{type}</span>
-      <span className={`text-sm font-bold ml-1 ${count > 0 ? '' : 'text-gray-400'}`}>{count}</span>
-    </div>
-  );
+    <style>
+        body { -webkit-tap-highlight-color: transparent; }
+    </style>
+</head>
+<body>
+    <!-- React 應用程式的掛載點 -->
+    <div id="root"></div>
 
-  return (
-    <div className="min-h-screen bg-gray-50 flex justify-center font-sans">
-      <div className="w-full max-w-md bg-white shadow-xl overflow-hidden flex flex-col relative">
-        
-        {/* App Header */}
-        <div className="bg-emerald-600 text-white p-5 shadow-md z-10">
-          <div className="flex items-center space-x-2 mb-2">
-            <MapPin size={24} />
-            <h1 className="text-xl font-bold">澳門找車位</h1>
-          </div>
-          <p className="text-emerald-100 text-sm">一鍵尋找附近有位的公共停車場</p>
-        </div>
+    <!-- 你的程式碼 -->
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
 
-        {/* Control Panel */}
-        <div className="p-5 border-b border-gray-100 bg-white">
-          {/* 全新超大「搵車位」按鈕 */}
-          <button
-            onClick={handleFindParking}
-            disabled={loading}
-            className="w-full flex items-center justify-center space-x-3 bg-emerald-500 text-white py-4 px-4 rounded-2xl font-bold text-2xl shadow-lg shadow-emerald-200 hover:bg-emerald-600 active:transform active:scale-95 transition-all disabled:opacity-70 mb-5"
-          >
-            {loading ? (
-              <Loader2 className="animate-spin" size={32} />
-            ) : (
-              <Navigation size={32} />
-            )}
-            <span className="tracking-widest">{loading ? '定位與搜尋中...' : '搵 車 位'}</span>
-          </button>
+        const MACAU_CARPARKS_DB = [
+          { id: '1', name: '華士古達嘉馬花園停車場', lat: 22.196328, lng: 113.546123, phone: '2833 7676', address: '東望洋街華士古達嘉馬花園地庫', fees: { day: 6, night: 3 } },
+          { id: '2', name: '栢寧停車場', lat: 22.193245, lng: 113.546512, phone: '2856 8388', address: '馬六甲街', fees: { day: 6, night: 3 } },
+          { id: '3', name: '亞馬喇前地停車場', lat: 22.189734, lng: 113.543456, phone: '2871 1818', address: '亞馬喇前地地庫', fees: { day: 6, night: 3 } },
+          { id: '4', name: '塔石體育館停車場', lat: 22.198456, lng: 113.545678, phone: '2852 5684', address: '東望洋街塔石體育館地庫', fees: { day: 6, night: 3 } },
+          { id: '5', name: '中央公園停車場 (氹仔)', lat: 22.155678, lng: 113.554321, phone: '2885 1234', address: '氹仔哥英布拉街', fees: { day: 6, night: 3 } },
+          { id: '6', name: '松山行人隧道停車場', lat: 22.197890, lng: 113.548901, phone: '2852 3311', address: '羅理基博士大馬路', fees: { day: 6, night: 3 } }
+        ];
 
-          {/* 新增：駕駛車輛選項 */}
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">駕駛車輛 (即時更新數量配對)</label>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { id: 'light', label: '輕型車', icon: Car },
-                { id: 'ev', label: '電動車', icon: Zap },
-                { id: 'moto', label: '電單車', icon: Bike }
-              ].map(v => {
-                const Icon = v.icon;
-                return (
+        function App() {
+          const [userLocation, setUserLocation] = useState(null);
+          const [radius, setRadius] = useState(500); 
+          const [sortBy, setSortBy] = useState('distance'); 
+          const [vehicleType, setVehicleType] = useState('light'); 
+          const [allParksData, setAllParksData] = useState([]); 
+          const [loading, setLoading] = useState(false);
+          const [error, setError] = useState(null);
+          const [activeNavId, setActiveNavId] = useState(null); 
+
+          const fetchRealtimeData = async () => {
+            return new Promise(resolve => {
+              setTimeout(() => {
+                resolve([
+                  { id: '1', spaces: { light: 12, ev: 2, moto: 45, heavy: 0 } },
+                  { id: '2', spaces: { light: 0, ev: 0, moto: 5, heavy: 0 } },
+                  { id: '3', spaces: { light: 156, ev: 10, moto: 230, heavy: 0 } },
+                  { id: '4', spaces: { light: 5, ev: 1, moto: 12, heavy: 0 } },
+                  { id: '5', spaces: { light: 45, ev: 8, moto: 60, heavy: 0 } },
+                  { id: '6', spaces: { light: 32, ev: 4, moto: 20, heavy: 0 } }
+                ]);
+              }, 800);
+            });
+          };
+
+          const calculateDistance = (lat1, lon1, lat2, lon2) => {
+            const R = 6371e3; 
+            const φ1 = lat1 * Math.PI / 180;
+            const φ2 = lat2 * Math.PI / 180;
+            const Δφ = (lat2 - lat1) * Math.PI / 180;
+            const Δλ = (lon2 - lon1) * Math.PI / 180;
+
+            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
+                      Math.cos(φ1) * Math.cos(φ2) *
+                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c; 
+          };
+
+          const getCurrentFeeInfo = (fees) => {
+            const hour = new Date().getHours();
+            const isDayTime = hour >= 8 && hour < 20; 
+            const currentFee = isDayTime ? fees.day : fees.night;
+            const timeLabel = isDayTime ? '日間 08:00-20:00' : '夜間 20:00-08:00';
+            return { fee: currentFee, label: timeLabel };
+          };
+
+          const openMap = (type, lat, lng, name) => {
+            let url = '';
+            if (type === 'google') {
+              url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+            } else if (type === 'apple') {
+              url = `http://maps.apple.com/?daddr=${lat},${lng}`;
+            } else if (type === 'amap') {
+              url = `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=car`;
+            }
+            window.open(url, '_blank');
+          };
+
+          const processParkingData = async (latitude, longitude) => {
+            setUserLocation({ lat: latitude, lng: longitude });
+            setActiveNavId(null);
+            setLoading(true);
+            setError(null);
+
+            try {
+              const realtimeData = await fetchRealtimeData();
+              const processedParks = MACAU_CARPARKS_DB.map(park => {
+                const distance = calculateDistance(latitude, longitude, park.lat, park.lng);
+                const realtimeInfo = realtimeData.find(d => d.id === park.id);
+                const spaces = realtimeInfo ? realtimeInfo.spaces : { light: 0, ev: 0, moto: 0, heavy: 0 };
+                const totalSpaces = spaces.light + spaces.ev + spaces.moto + spaces.heavy;
+                const currentFeeInfo = getCurrentFeeInfo(park.fees);
+
+                return {
+                  ...park,
+                  distance: Math.round(distance), 
+                  spaces,
+                  totalSpaces,
+                  currentFee: currentFeeInfo.fee,
+                  feeLabel: currentFeeInfo.label
+                };
+              });
+              setAllParksData(processedParks);
+            } catch (err) {
+              setError("獲取車位資訊時發生錯誤，請稍後再試。");
+            } finally {
+              setLoading(false);
+            }
+          };
+
+          const getRelevantSpaces = (park, type) => {
+            if (type === 'light') return park.spaces.light;
+            if (type === 'ev') return park.spaces.ev;
+            if (type === 'moto') return park.spaces.moto;
+            return park.totalSpaces;
+          };
+
+          const displayedParks = useMemo(() => {
+            if (!allParksData.length) return [];
+            let filtered = allParksData.filter(park => park.distance <= radius);
+
+            filtered.sort((a, b) => {
+              const aSpaces = getRelevantSpaces(a, vehicleType);
+              const bSpaces = getRelevantSpaces(b, vehicleType);
+              const aEmpty = aSpaces === 0;
+              const bEmpty = bSpaces === 0;
+
+              if (aEmpty && !bEmpty) return 1;
+              if (!aEmpty && bEmpty) return -1;
+
+              if (sortBy === 'distance') return a.distance - b.distance;
+              if (sortBy === 'spaces') return bSpaces - aSpaces;
+              if (sortBy === 'fee') return a.currentFee - b.currentFee;
+              return 0;
+            });
+
+            return filtered;
+          }, [allParksData, radius, sortBy, vehicleType]);
+
+          const handleFindParking = () => {
+            if (!navigator.geolocation) {
+              setError("您的瀏覽器不支援地理位置功能，請使用「電腦測試」按鈕。");
+              return;
+            }
+            
+            setLoading(true);
+            setError(null);
+            setAllParksData([]); 
+
+            navigator.geolocation.getCurrentPosition(
+              (position) => {
+                processParkingData(position.coords.latitude, position.coords.longitude);
+              },
+              (err) => {
+                setError("無法獲取您的位置。若在電腦上測試，請點擊下方的「模擬測試」按鈕。");
+                setLoading(false);
+              },
+              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+          };
+
+          const handleMockLocation = () => {
+            const mockLat = 22.195000;
+            const mockLng = 113.545000;
+            setAllParksData([]);
+            processParkingData(mockLat, mockLng);
+          };
+
+          const SpaceBadge = ({ iconClass, count, type, colorClass }) => (
+            <div className={`flex items-center space-x-1 px-2 py-1 rounded-md border ${count > 0 ? colorClass : 'bg-gray-100 text-gray-400 border-gray-200'}`}>
+              <i className={`${iconClass} text-[14px]`}></i>
+              <span className="text-xs font-medium">{type}</span>
+              <span className={`text-sm font-bold ml-1 ${count > 0 ? '' : 'text-gray-400'}`}>{count}</span>
+            </div>
+          );
+
+          return (
+            <div className="min-h-screen bg-gray-50 flex justify-center font-sans">
+              <div className="w-full max-w-md bg-white shadow-xl overflow-hidden flex flex-col relative">
+                
+                {/* Header */}
+                <div className="bg-emerald-600 text-white p-5 shadow-md z-10">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <i className="fa-solid fa-location-dot text-2xl"></i>
+                    <h1 className="text-xl font-bold">澳門找車位</h1>
+                  </div>
+                  <p className="text-emerald-100 text-sm">一鍵尋找附近有位的公共停車場</p>
+                </div>
+
+                {/* Control Panel */}
+                <div className="p-5 border-b border-gray-100 bg-white">
                   <button
-                    key={v.id}
-                    onClick={() => setVehicleType(v.id)}
-                    className={`py-2 px-1 text-sm rounded-lg transition-colors flex flex-col items-center justify-center space-y-1 border ${
-                      vehicleType === v.id 
-                        ? 'bg-blue-50 border-blue-500 text-blue-700 font-bold shadow-sm' 
-                        : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                    }`}
+                    onClick={handleFindParking}
+                    disabled={loading}
+                    className="w-full flex items-center justify-center space-x-3 bg-emerald-500 text-white py-4 px-4 rounded-2xl font-bold text-2xl shadow-lg shadow-emerald-200 hover:bg-emerald-600 active:transform active:scale-95 transition-all disabled:opacity-70 mb-5"
                   >
-                    <Icon size={18} />
-                    <span>{v.label}</span>
+                    {loading ? (
+                      <i className="fa-solid fa-spinner fa-spin text-3xl"></i>
+                    ) : (
+                      <i className="fa-solid fa-location-arrow text-3xl"></i>
+                    )}
+                    <span className="tracking-widest">{loading ? '定位與搜尋中...' : '搵 車 位'}</span>
                   </button>
-                );
-              })}
-            </div>
-          </div>
 
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-gray-700 mb-2">搜尋範圍 (即時更新)</label>
-            <div className="grid grid-cols-4 gap-2">
-              {[300, 500, 800, 1000].map(r => (
-                <button
-                  key={r}
-                  onClick={() => setRadius(r)}
-                  className={`py-2 text-sm rounded-lg transition-colors ${
-                    radius === r 
-                      ? 'bg-gray-800 text-white font-medium shadow-sm' 
-                      : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                  }`}
-                >
-                  {r} 米
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* 新增：排序選項 */}
-          <div className="mb-2">
-            <label className="block text-sm font-medium text-gray-700 mb-2">排序方式</label>
-            <div className="grid grid-cols-3 gap-2">
-              {[
-                { id: 'distance', label: '距離最近' },
-                { id: 'spaces', label: '車位最多' },
-                { id: 'fee', label: '收費最低' }
-              ].map(sortOpt => (
-                <button
-                  key={sortOpt.id}
-                  onClick={() => setSortBy(sortOpt.id)}
-                  className={`py-2 text-sm rounded-lg transition-colors border ${
-                    sortBy === sortOpt.id 
-                      ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-bold' 
-                      : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                  }`}
-                >
-                  {sortOpt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {error && (
-            <div className="mt-4 p-3 bg-red-50 text-red-600 rounded-lg flex items-start space-x-2 text-sm">
-              <AlertCircle size={18} className="shrink-0 mt-0.5" />
-              <span>{error}</span>
-            </div>
-          )}
-        </div>
-
-        {/* Results List */}
-        <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-20">
-          {displayedParks.length > 0 && (
-            <div className="text-sm text-gray-500 mb-3 flex justify-between items-center">
-              <span>找到 {displayedParks.length} 個停車場</span>
-              <span>半徑 {radius} 米內</span>
-            </div>
-          )}
-
-          <div className="space-y-4">
-            {displayedParks.map((park) => {
-              const relevantSpaces = getRelevantSpaces(park, vehicleType);
-              const isFull = relevantSpaces === 0;
-
-              return (
-                <div key={park.id} className={`bg-white p-4 rounded-xl shadow-sm border ${isFull ? 'border-red-200 opacity-80' : 'border-gray-100'}`}>
-                  <div className="flex justify-between items-start mb-3">
-                    <h3 className="font-bold text-gray-800 text-lg leading-tight w-3/4">
-                      {park.name}
-                      {isFull && <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-bold">已滿</span>}
-                    </h3>
-                    <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap">
-                      距 {park.distance}m
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">駕駛車輛 (即時更新數量配對)</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'light', label: '輕型車', iconClass: 'fa-solid fa-car' },
+                        { id: 'ev', label: '電動車', iconClass: 'fa-solid fa-bolt' },
+                        { id: 'moto', label: '電單車', iconClass: 'fa-solid fa-motorcycle' }
+                      ].map(v => (
+                        <button
+                          key={v.id}
+                          onClick={() => setVehicleType(v.id)}
+                          className={`py-2 px-1 text-sm rounded-lg transition-colors flex flex-col items-center justify-center space-y-1 border ${
+                            vehicleType === v.id 
+                              ? 'bg-blue-50 border-blue-500 text-blue-700 font-bold shadow-sm' 
+                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          <i className={`${v.iconClass} text-lg`}></i>
+                          <span>{v.label}</span>
+                        </button>
+                      ))}
                     </div>
                   </div>
 
-                  {/* 停車場詳細資訊 */}
-                  <div className="bg-gray-50 p-3 rounded-lg mb-3 text-sm text-gray-600">
-                    <div className="flex items-center space-x-2 mb-2 border-b border-gray-200 pb-2">
-                      <DollarSign size={18} className="text-emerald-600 shrink-0" />
-                      <span className="flex-1">現時收費：</span>
-                      <strong className="text-emerald-700 text-lg">${park.currentFee}</strong> 
-                      <span>/小時 <span className="text-xs text-gray-400">({park.feeLabel})</span></span>
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">搜尋範圍 (即時更新)</label>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[300, 500, 800, 1000].map(r => (
+                        <button
+                          key={r}
+                          onClick={() => setRadius(r)}
+                          className={`py-2 text-sm rounded-lg transition-colors ${
+                            radius === r 
+                              ? 'bg-gray-800 text-white font-medium shadow-sm' 
+                              : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                          }`}
+                        >
+                          {r} 米
+                        </button>
+                      ))}
                     </div>
-                     <div className="flex flex-col space-y-1 mb-2 border-b border-gray-200 pb-2 text-xs">
-                        <div className="flex justify-between">
-                            <span className="text-gray-500">日間收費 (08:00-20:00)</span>
-                            <span className="font-medium">${park.fees.day}/小時</span>
+                  </div>
+
+                  <div className="mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">排序方式</label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { id: 'distance', label: '距離最近' },
+                        { id: 'spaces', label: '車位最多' },
+                        { id: 'fee', label: '收費最低' }
+                      ].map(sortOpt => (
+                        <button
+                          key={sortOpt.id}
+                          onClick={() => setSortBy(sortOpt.id)}
+                          className={`py-2 text-sm rounded-lg transition-colors border ${
+                            sortBy === sortOpt.id 
+                              ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-bold' 
+                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
+                          }`}
+                        >
+                          {sortOpt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {error && (
+                    <div className="mt-4 p-3 bg-red-50 text-red-600 rounded-lg flex items-start space-x-2 text-sm">
+                      <i className="fa-solid fa-circle-exclamation mt-0.5"></i>
+                      <span>{error}</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Results List */}
+                <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-20">
+                  {displayedParks.length > 0 && (
+                    <div className="text-sm text-gray-500 mb-3 flex justify-between items-center">
+                      <span>找到 {displayedParks.length} 個停車場</span>
+                      <span>半徑 {radius} 米內</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-4">
+                    {displayedParks.map((park) => {
+                      const relevantSpaces = getRelevantSpaces(park, vehicleType);
+                      const isFull = relevantSpaces === 0;
+
+                      return (
+                        <div key={park.id} className={`bg-white p-4 rounded-xl shadow-sm border ${isFull ? 'border-red-200 opacity-80' : 'border-gray-100'}`}>
+                          <div className="flex justify-between items-start mb-3">
+                            <h3 className="font-bold text-gray-800 text-lg leading-tight w-3/4">
+                              {park.name}
+                              {isFull && <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-bold">已滿</span>}
+                            </h3>
+                            <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap">
+                              距 {park.distance}m
+                            </div>
+                          </div>
+
+                          <div className="bg-gray-50 p-3 rounded-lg mb-3 text-sm text-gray-600">
+                            <div className="flex items-center space-x-2 mb-2 border-b border-gray-200 pb-2">
+                              <i className="fa-solid fa-dollar-sign text-emerald-600 text-lg"></i>
+                              <span className="flex-1">現時收費：</span>
+                              <strong className="text-emerald-700 text-lg">${park.currentFee}</strong> 
+                              <span>/小時 <span className="text-xs text-gray-400">({park.feeLabel})</span></span>
+                            </div>
+                             <div className="flex flex-col space-y-1 mb-2 border-b border-gray-200 pb-2 text-xs">
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">日間收費 (08:00-20:00)</span>
+                                    <span className="font-medium">${park.fees.day}/小時</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-gray-500">夜間收費 (20:00-08:00)</span>
+                                    <span className="font-medium">${park.fees.night}/小時</span>
+                                </div>
+                            </div>
+
+                            <div className="flex items-start space-x-2 mb-1.5 mt-2">
+                              <i className="fa-solid fa-map text-blue-500 mt-0.5"></i>
+                              <span className="leading-tight">地址：{park.address}</span>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <i className="fa-solid fa-phone text-orange-500"></i>
+                              <span>聯絡電話：{park.phone}</span>
+                            </div>
+                          </div>
+
+                          <div className="grid grid-cols-2 gap-2 mt-2">
+                            <SpaceBadge 
+                              iconClass="fa-solid fa-car" count={park.spaces.light} type="輕型" 
+                              colorClass={vehicleType === 'light' ? (park.spaces.light > 10 ? 'bg-blue-100 text-blue-800 border-blue-300 ring-1 ring-blue-300' : park.spaces.light > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.light > 10 ? 'bg-blue-50 text-blue-700 border-blue-200' : park.spaces.light > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
+                            />
+                            <SpaceBadge 
+                              iconClass="fa-solid fa-bolt" count={park.spaces.ev} type="電動" 
+                              colorClass={vehicleType === 'ev' ? (park.spaces.ev > 0 ? 'bg-green-100 text-green-800 border-green-300 ring-1 ring-green-300' : '') : (park.spaces.ev > 0 ? 'bg-green-50 text-green-700 border-green-200' : '')} 
+                            />
+                            <SpaceBadge 
+                              iconClass="fa-solid fa-motorcycle" count={park.spaces.moto} type="電單車" 
+                              colorClass={vehicleType === 'moto' ? (park.spaces.moto > 10 ? 'bg-purple-100 text-purple-800 border-purple-300 ring-1 ring-purple-300' : park.spaces.moto > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.moto > 10 ? 'bg-purple-50 text-purple-700 border-purple-200' : park.spaces.moto > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
+                            />
+                            <SpaceBadge 
+                              iconClass="fa-solid fa-truck" count={park.spaces.heavy} type="重型" 
+                              colorClass={park.spaces.heavy > 0 ? 'bg-slate-50 text-slate-700 border-slate-200' : ''} 
+                            />
+                          </div>
+
+                          <div className="mt-4 pt-3 border-t border-gray-50 flex flex-col">
+                            <button
+                              onClick={() => setActiveNavId(activeNavId === park.id ? null : park.id)}
+                              className="flex items-center justify-center space-x-1 text-emerald-600 bg-emerald-50 py-2 rounded-lg font-medium hover:bg-emerald-100 transition-colors"
+                            >
+                              <i className="fa-solid fa-location-arrow"></i>
+                              <span>去停車場</span>
+                              <i className={`fa-solid fa-chevron-${activeNavId === park.id ? 'up' : 'down'}`}></i>
+                            </button>
+
+                            {activeNavId === park.id && (
+                              <div className="flex space-x-2 mt-2">
+                                <button onClick={() => openMap('google', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 flex flex-col items-center justify-center space-y-1 transition-colors">
+                                  <span className="font-semibold text-sm">Google</span>
+                                  <span>Maps</span>
+                                </button>
+                                <button onClick={() => openMap('apple', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200 flex flex-col items-center justify-center space-y-1 transition-colors">
+                                  <span className="font-semibold text-sm">Apple</span>
+                                  <span>Maps</span>
+                                </button>
+                                <button onClick={() => openMap('amap', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-sky-50 text-sky-700 rounded-md hover:bg-sky-100 flex flex-col items-center justify-center space-y-1 transition-colors">
+                                  <span className="font-semibold text-sm">高德</span>
+                                  <span>地圖</span>
+                                </button>
+                              </div>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex justify-between">
-                            <span className="text-gray-500">夜間收費 (20:00-08:00)</span>
-                            <span className="font-medium">${park.fees.night}/小時</span>
-                        </div>
-                    </div>
+                      );
+                    })}
 
-                    <div className="flex items-start space-x-2 mb-1.5 mt-2">
-                      <Map size={15} className="text-blue-500 shrink-0 mt-0.5" />
-                      <span className="leading-tight">地址：{park.address}</span>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <Phone size={15} className="text-orange-500 shrink-0" />
-                      <span>聯絡電話：{park.phone}</span>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2 mt-2">
-                    <SpaceBadge 
-                      icon={Car} count={park.spaces.light} type="輕型" 
-                      colorClass={vehicleType === 'light' ? (park.spaces.light > 10 ? 'bg-blue-100 text-blue-800 border-blue-300 ring-1 ring-blue-300' : park.spaces.light > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.light > 10 ? 'bg-blue-50 text-blue-700 border-blue-200' : park.spaces.light > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
-                    />
-                    <SpaceBadge 
-                      icon={Zap} count={park.spaces.ev} type="電動" 
-                      colorClass={vehicleType === 'ev' ? (park.spaces.ev > 0 ? 'bg-green-100 text-green-800 border-green-300 ring-1 ring-green-300' : '') : (park.spaces.ev > 0 ? 'bg-green-50 text-green-700 border-green-200' : '')} 
-                    />
-                    <SpaceBadge 
-                      icon={Bike} count={park.spaces.moto} type="電單車" 
-                      colorClass={vehicleType === 'moto' ? (park.spaces.moto > 10 ? 'bg-purple-100 text-purple-800 border-purple-300 ring-1 ring-purple-300' : park.spaces.moto > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.moto > 10 ? 'bg-purple-50 text-purple-700 border-purple-200' : park.spaces.moto > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
-                    />
-                    <SpaceBadge 
-                      icon={Truck} count={park.spaces.heavy} type="重型" 
-                      colorClass={park.spaces.heavy > 0 ? 'bg-slate-50 text-slate-700 border-slate-200' : ''} 
-                    />
-                  </div>
-
-                  {/* 去停車場導航區塊 */}
-                  <div className="mt-4 pt-3 border-t border-gray-50 flex flex-col">
-                    <button
-                      onClick={() => setActiveNavId(activeNavId === park.id ? null : park.id)}
-                      className="flex items-center justify-center space-x-1 text-emerald-600 bg-emerald-50 py-2 rounded-lg font-medium hover:bg-emerald-100 transition-colors"
-                    >
-                      <Navigation size={16} />
-                      <span>去停車場</span>
-                      {activeNavId === park.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-
-                    {activeNavId === park.id && (
-                      <div className="flex space-x-2 mt-2">
-                        <button onClick={() => openMap('google', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 flex flex-col items-center justify-center space-y-1 transition-colors">
-                          <span className="font-semibold text-sm">Google</span>
-                          <span>Maps</span>
-                        </button>
-                        <button onClick={() => openMap('apple', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200 flex flex-col items-center justify-center space-y-1 transition-colors">
-                          <span className="font-semibold text-sm">Apple</span>
-                          <span>Maps</span>
-                        </button>
-                        <button onClick={() => openMap('amap', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-sky-50 text-sky-700 rounded-md hover:bg-sky-100 flex flex-col items-center justify-center space-y-1 transition-colors">
-                          <span className="font-semibold text-sm">高德</span>
-                          <span>地圖</span>
-                        </button>
+                    {!loading && displayedParks.length === 0 && !error && userLocation && (
+                      <div className="text-center text-gray-400 py-10">
+                        <p>無符合條件的結果</p>
+                        <p className="text-xs mt-1">請嘗試擴大搜尋範圍</p>
+                      </div>
+                    )}
+                    
+                    {!loading && !userLocation && !error && (
+                      <div className="text-center text-gray-400 py-16 flex flex-col items-center">
+                        <i className="fa-solid fa-location-dot text-gray-300 text-5xl mb-4"></i>
+                        <p>點擊上方按鈕開始搜尋</p>
+                        <p className="text-xs mt-2 max-w-xs text-center">系統將獲取您的GPS定位，<br/>並顯示附近有空位的停車場。</p>
                       </div>
                     )}
                   </div>
                 </div>
-              );
-            })}
 
-            {!loading && displayedParks.length === 0 && !error && userLocation && (
-              <div className="text-center text-gray-400 py-10">
-                <p>無符合條件的結果</p>
-                <p className="text-xs mt-1">請嘗試擴大搜尋範圍</p>
+                <button
+                  onClick={handleMockLocation}
+                  disabled={loading}
+                  className="fixed bottom-6 right-6 flex items-center justify-center space-x-2 bg-slate-800 text-white p-3 md:px-5 md:py-3 rounded-full shadow-2xl hover:bg-slate-700 active:transform active:scale-95 transition-all z-50 border border-slate-600 disabled:opacity-70"
+                  title="模擬身處澳門市中心 (測試用)"
+                >
+                  <i className="fa-solid fa-desktop"></i>
+                  <span className="text-sm font-medium hidden md:block">模擬測試</span>
+                </button>
+
               </div>
-            )}
-            
-            {!loading && !userLocation && !error && (
-              <div className="text-center text-gray-400 py-16 flex flex-col items-center">
-                <MapPin size={48} className="text-gray-300 mb-4" />
-                <p>點擊上方按鈕開始搜尋</p>
-                <p className="text-xs mt-2 max-w-xs text-center">系統將獲取您的GPS定位，<br/>並顯示附近有空位的停車場。</p>
-              </div>
-            )}
-          </div>
-        </div>
+            </div>
+          );
+        }
 
-        {/* 開發者/測試專用：電腦模擬定位懸浮按鈕 (完全脫離主排版) */}
-        <button
-          onClick={handleMockLocation}
-          disabled={loading}
-          className="absolute bottom-6 right-6 md:fixed md:bottom-8 md:right-8 flex items-center justify-center space-x-2 bg-slate-800 text-white p-3 md:px-5 md:py-3 rounded-full shadow-2xl hover:bg-slate-700 active:transform active:scale-95 transition-all z-50 border border-slate-600 disabled:opacity-70"
-          title="模擬身處澳門市中心 (測試用)"
-        >
-          <MonitorPlay size={22} />
-          <span className="text-sm font-medium hidden md:block">模擬測試</span>
-        </button>
-
-      </div>
-    </div>
-  );
-}
+        // 渲染應用程式
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
