@@ -208,49 +208,98 @@
   }
 
   /* ─── CORS-Proxy Fetch ─── */
-  function makeFetchWithTimeout(url, headers, timeout) {
+  function timedFetch(url, opts, timeout) {
     return new Promise(function(resolve, reject) {
-      var ctrl = new AbortController();
-      var tid = setTimeout(function() { ctrl.abort(); reject(new Error('timeout')); }, timeout);
-      fetch(url, { headers: headers, signal: ctrl.signal })
-        .then(function(r) { clearTimeout(tid); resolve(r); })
-        .catch(function(e) { clearTimeout(tid); reject(e); });
+      var done = false;
+      var tid = setTimeout(function() {
+        if (!done) { done = true; reject(new Error('timeout:' + url)); }
+      }, timeout);
+      fetch(url, opts || {})
+        .then(function(r) {
+          if (!done) { done = true; clearTimeout(tid); resolve(r); }
+        })
+        .catch(function(e) {
+          if (!done) { done = true; clearTimeout(tid); reject(e); }
+        });
     });
   }
 
   function fetchViaProxies(path) {
     var targetUrl = API_BASE + path;
-    var authHeaders = { 'Authorization': APPCODE };
+    var auth = APPCODE;
 
-    var attempts = [
-      function() {
-        return makeFetchWithTimeout(targetUrl, authHeaders, FETCH_TIMEOUT)
-          .then(function(r) { return r.text(); });
-      },
-      function() {
-        var proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(targetUrl);
-        return makeFetchWithTimeout(proxyUrl, {
-          'x-cors-headers': JSON.stringify({ 'Authorization': APPCODE })
-        }, FETCH_TIMEOUT).then(function(r) { return r.text(); });
-      },
-      function() {
-        var proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl + '?auth=' + encodeURIComponent(APPCODE));
-        return makeFetchWithTimeout(proxyUrl, {}, FETCH_TIMEOUT)
-          .then(function(r) { return r.json(); })
-          .then(function(j) { return j && j.contents ? j.contents : Promise.reject(new Error('empty')); });
-      },
-      function() {
-        var proxyUrl = 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(targetUrl);
-        return makeFetchWithTimeout(proxyUrl, authHeaders, FETCH_TIMEOUT)
-          .then(function(r) { return r.text(); });
-      }
-    ];
-
-    function tryNext(idx) {
-      if (idx >= attempts.length) return Promise.reject(new Error('all proxies failed'));
-      return attempts[idx]().catch(function() { return tryNext(idx + 1); });
+    function getText(r) {
+      if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
+      return r.text();
     }
-    return tryNext(0);
+
+    /* Strategy 1: direct (works if server has CORS + proper headers) */
+    function tryDirect() {
+      return timedFetch(targetUrl, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
+        .then(getText);
+    }
+
+    /* Strategy 2: corsproxy.io — forwards all request headers to target */
+    function tryCorsproxy() {
+      return timedFetch(
+        'https://corsproxy.io/?' + encodeURIComponent(targetUrl),
+        { headers: { 'Authorization': auth } },
+        FETCH_TIMEOUT
+      ).then(getText);
+    }
+
+    /* Strategy 3: corsproxy.io with x-cors-headers meta-header format */
+    function tryCorsproxyAlt() {
+      return timedFetch(
+        'https://corsproxy.io/?' + encodeURIComponent(targetUrl),
+        { headers: { 'x-cors-headers': '{"Authorization":"' + auth + '"}' } },
+        FETCH_TIMEOUT
+      ).then(getText);
+    }
+
+    /* Strategy 4: cors.bridged.cc */
+    function tryBridged() {
+      return timedFetch(
+        'https://cors.bridged.cc/' + targetUrl,
+        { headers: { 'Authorization': auth, 'x-cors-grida-api-key': 'temp' } },
+        FETCH_TIMEOUT
+      ).then(getText);
+    }
+
+    /* Strategy 5: thingproxy */
+    function tryThingproxy() {
+      return timedFetch(
+        'https://thingproxy.freeboard.io/fetch/' + targetUrl,
+        { headers: { 'Authorization': auth } },
+        FETCH_TIMEOUT
+      ).then(getText);
+    }
+
+    /* Strategy 6: allorigins — no auth, last resort (may get 401/403 response) */
+    function tryAllOrigins() {
+      return timedFetch(
+        'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl),
+        {},
+        FETCH_TIMEOUT
+      ).then(function(r) { return r.json(); })
+       .then(function(j) {
+         if (!j || !j.contents) return Promise.reject(new Error('allorigins empty'));
+         if (j.contents.indexOf('<') === -1) return Promise.reject(new Error('allorigins no xml'));
+         return j.contents;
+       });
+    }
+
+    var steps = [tryDirect, tryCorsproxy, tryCorsproxyAlt, tryBridged, tryThingproxy, tryAllOrigins];
+    var lastErr = '';
+    function run(i) {
+      if (i >= steps.length) return Promise.reject(new Error('all_failed: ' + lastErr));
+      return steps[i]().catch(function(e) {
+        lastErr = (e && e.message) || String(e);
+        console.warn('[Proxy strategy ' + i + ' failed]', lastErr);
+        return run(i + 1);
+      });
+    }
+    return run(0);
   }
 
   /* ─── localStorage helpers ─── */
@@ -563,10 +612,11 @@
         : mergedParks.filter(function(p) { return p.region === selectedRegion; });
       var st = { light:{a:0,t:0}, moto:{a:0,t:0}, ev:{a:0,t:0}, heavy:{a:0,t:0} };
       pool.forEach(function(p) {
-        st.light.t  += p.capacity.light;  st.light.a  += (p.spaces ? p.spaces.light  : 0);
-        st.moto.t   += p.capacity.moto;   st.moto.a   += (p.spaces ? p.spaces.moto   : 0);
-        st.ev.t     += p.capacity.ev;     st.ev.a     += (p.spaces ? p.spaces.ev     : 0);
-        st.heavy.t  += p.capacity.heavy;  st.heavy.a  += (p.spaces ? p.spaces.heavy  : 0);
+        var cap = p.capacity || {};
+        st.light.t  += (cap.light  || 0);  st.light.a  += (p.spaces ? (p.spaces.light  || 0) : 0);
+        st.moto.t   += (cap.moto   || 0);  st.moto.a   += (p.spaces ? (p.spaces.moto   || 0) : 0);
+        st.ev.t     += (cap.ev     || 0);  st.ev.a     += (p.spaces ? (p.spaces.ev     || 0) : 0);
+        st.heavy.t  += (cap.heavy  || 0);  st.heavy.a  += (p.spaces ? (p.spaces.heavy  || 0) : 0);
       });
       return { count: pool.length, st: st };
     }, [mergedParks, selectedRegion]);
@@ -637,12 +687,22 @@
             </div>
             <div className="flex items-center justify-between">
               <p className="text-emerald-200 text-xs">全澳 {parksBase.length} 個公共停車場</p>
-              {lastRtTs && (
-                <p className="text-emerald-300 text-[10px]">
-                  更新：{lastRtTs.toLocaleTimeString('zh-MO', {hour:'2-digit',minute:'2-digit',second:'2-digit'})}
-                  {rtLoading && <i className="fa-solid fa-rotate ml-1 spin"></i>}
-                </p>
-              )}
+              <div className="flex items-center space-x-2">
+                {lastRtTs ? (
+                  <p className="text-emerald-300 text-[10px]">
+                    更新：{lastRtTs.toLocaleTimeString('zh-MO', {hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+                  </p>
+                ) : (
+                  <p className="text-emerald-300 text-[10px]">尚未取得數據</p>
+                )}
+                <button
+                  onClick={function(){ fetchRealtime(false); }}
+                  disabled={rtLoading}
+                  className="text-emerald-300 hover:text-white disabled:opacity-40 transition-colors"
+                  title="立即重新整合數據">
+                  <i className={'fa-solid fa-rotate text-xs' + (rtLoading ? ' spin' : '')}></i>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -936,33 +996,42 @@
 
                     {/* Spaces */}
                     <div className="px-4 pb-2">
-                      {noData ? (
-                        <div className="text-xs text-gray-400 py-1">
-                          <i className="fa-solid fa-circle-exclamation mr-1"></i>未能讀取即時車位數據
-                        </div>
-                      ) : (
-                        <div className="grid grid-cols-4 gap-1.5">
-                          {[
-                            { key:'light', icon:'fa-car',       label:'輕型', val: park.spaces.light,  sel:'light', ring:'ring-blue-300' },
-                            { key:'ev',    icon:'fa-bolt',      label:'電動', val: park.spaces.ev,    sel:'ev',    ring:'ring-green-300' },
-                            { key:'moto',  icon:'fa-motorcycle',label:'電單車',val: park.spaces.moto,  sel:'moto',  ring:'ring-orange-300' },
-                            { key:'heavy', icon:'fa-truck',     label:'重型', val: park.spaces.heavy, sel:'all',   ring:'ring-slate-300' }
-                          ].map(function(item) {
-                            var active = vehicleType === item.sel;
-                            return (
-                              <div key={item.key}
-                                className={'rounded-lg p-1.5 text-center border ' +
-                                  (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
-                                <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
-                                <div className="text-[9px] text-gray-400">{item.label}</div>
-                                <div className={'text-sm ' + spaceColor(item.val, item.sel)}>
-                                  {item.val}
-                                </div>
-                              </div>
-                            );
-                          })}
+                      {noData && (
+                        <div className="text-[10px] text-orange-500 mb-1.5 flex items-center space-x-1">
+                          <i className="fa-solid fa-triangle-exclamation"></i>
+                          <span>即時車位數據未能讀取，顯示停車場總容量</span>
                         </div>
                       )}
+                      <div className="grid grid-cols-4 gap-1.5">
+                        {[
+                          { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? (park.capacity.light  || 0) : 0, sel:'light', ring:'ring-blue-300' },
+                          { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? (park.capacity.ev     || 0) : 0, sel:'ev',    ring:'ring-green-300' },
+                          { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? (park.capacity.moto   || 0) : 0, sel:'moto',  ring:'ring-orange-300' },
+                          { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? (park.capacity.heavy  || 0) : 0, sel:'all',   ring:'ring-slate-300' }
+                        ].map(function(item) {
+                          var active = vehicleType === item.sel;
+                          var hasAvail = item.avail !== null;
+                          return (
+                            <div key={item.key}
+                              className={'rounded-lg p-1.5 text-center border ' +
+                                (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
+                              <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
+                              <div className="text-[9px] text-gray-400">{item.label}</div>
+                              {hasAvail ? (
+                                <div>
+                                  <span className={'text-sm ' + spaceColor(item.avail, item.sel)}>{item.avail}</span>
+                                  <span className="text-[9px] text-gray-400">/{item.cap}</span>
+                                </div>
+                              ) : (
+                                <div>
+                                  <span className="text-xs text-gray-300">---</span>
+                                  <span className="text-[9px] text-gray-400">/{item.cap}</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
 
                     {/* Info */}
