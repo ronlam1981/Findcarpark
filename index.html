@@ -1,715 +1,1044 @@
 <!DOCTYPE html>
 <html lang="zh-MO">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>澳門找車位小助手</title>
-    
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
-    <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
-
-    <style>
-        body { -webkit-tap-highlight-color: transparent; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>澳門找車位小助手</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
+  <style>
+    body { -webkit-tap-highlight-color: transparent; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    @keyframes pulse-red {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    .pulse-red { animation: pulse-red 1.2s ease-in-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; display: inline-block; }
+  </style>
 </head>
 <body>
-    <div id="root"></div>
+<div id="root"></div>
 
-    <script type="text/babel">
-        const { useState, useEffect, useMemo } = React;
+<script type="text/babel">
+  const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
-        // 全澳 77 個公共停車場靜態資料庫 (完整版)
-        const MACAU_CARPARKS_DB = [
-          // 中區 / 荷蘭園 / 雀仔園
-          { id: '1', name: '華士古達嘉馬花園停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1963, lng: 113.5461, phone: '2833 7676', address: '東望洋街', fees: { day: 6, night: 3 }, capacity: { light: 170, ev: 10, moto: 100, heavy: 0 } },
-          { id: '2', name: '塔石體育館停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1984, lng: 113.5456, phone: '2852 5684', address: '東望洋街塔石體育館', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 5, moto: 50, heavy: 0 } },
-          { id: '3', name: '松山行人隧道停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1978, lng: 113.5489, phone: '2852 3311', address: '羅理基博士大馬路', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 10, moto: 80, heavy: 0 } },
-          { id: '4', name: '亞馬喇前地停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1897, lng: 113.5434, phone: '2871 1818', address: '亞馬喇前地地庫', fees: { day: 6, night: 3 }, capacity: { light: 800, ev: 20, moto: 300, heavy: 0 } },
-          { id: '53', name: '交通事務局大樓停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.2030, lng: 113.5480, phone: '8866 6363', address: '馬交石炮台馬路', fees: { day: 6, night: 3 }, capacity: { light: 100, ev: 2, moto: 50, heavy: 0 } },
-          { id: '54', name: '栢威停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1950, lng: 113.5450, phone: '2833 0011', address: '賈伯樂提督街', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 60, heavy: 0 } },
-          { id: '56', name: '栢蕙停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1990, lng: 113.5490, phone: '2833 0033', address: '荷蘭園大馬路', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 0, moto: 100, heavy: 0 } },
-          { id: '65', name: '麗都停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1980, lng: 113.5430, phone: '2833 0044', address: '沙梨頭', fees: { day: 6, night: 3 }, capacity: { light: 120, ev: 0, moto: 50, heavy: 0 } },
-          { id: '77', name: '南灣(栢湖)停車場', region: '中區 / 荷蘭園 / 雀仔園', lat: 22.1880, lng: 113.5400, phone: '2871 3333', address: '南灣', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 10, moto: 150, heavy: 0 } },
-          
-          // 新口岸 / 皇朝
-          { id: '5', name: '栢佳停車場', region: '新口岸 / 皇朝', lat: 22.1922, lng: 113.5401, phone: '2871 2345', address: '南灣大馬路', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 5, moto: 80, heavy: 0 } },
-          { id: '6', name: '何賢公園停車場', region: '新口岸 / 皇朝', lat: 22.1901, lng: 113.5485, phone: '2870 1122', address: '宋玉生廣場何賢公園', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 10, moto: 150, heavy: 0 } },
-          { id: '7', name: '藝園停車場', region: '新口岸 / 皇朝', lat: 22.1888, lng: 113.5492, phone: '2870 2233', address: '宋玉生廣場藝園', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 5, moto: 120, heavy: 0 } },
-          { id: '8', name: '栢嘉停車場', region: '新口岸 / 皇朝', lat: 22.1873, lng: 113.5492, phone: '2872 2911', address: '宋玉生廣場', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 5, moto: 100, heavy: 0 } },
-          { id: '9', name: '栢寧停車場', region: '新口岸 / 皇朝', lat: 22.1932, lng: 113.5465, phone: '2856 8388', address: '馬六甲街', fees: { day: 6, night: 3 }, capacity: { light: 500, ev: 0, moto: 80, heavy: 0 } },
-          { id: '10', name: '科學館公共停車場', region: '新口岸 / 皇朝', lat: 22.1865, lng: 113.5552, phone: '2888 0822', address: '孫逸仙大馬路', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 10, moto: 100, heavy: 0 } },
-          { id: '11', name: '栢樂停車場', region: '新口岸 / 皇朝', lat: 22.1965, lng: 113.5555, phone: '2872 8899', address: '外港客運碼頭', fees: { day: 6, night: 3 }, capacity: { light: 600, ev: 0, moto: 150, heavy: 0 } },
-          { id: '12', name: '栢健停車場', region: '新口岸 / 皇朝', lat: 22.1925, lng: 113.5510, phone: '2871 3344', address: '羅理基博士大馬路', fees: { day: 6, night: 3 }, capacity: { light: 180, ev: 2, moto: 60, heavy: 0 } },
-          { id: '13', name: '觀音像海濱休憩區停車場', region: '新口岸 / 皇朝', lat: 22.1850, lng: 113.5510, phone: '2833 3322', address: '孫逸仙大馬路', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 5, moto: 50, heavy: 0 } },
-          { id: '62', name: '澳門文化中心停車場', region: '新口岸 / 皇朝', lat: 22.1868, lng: 113.5535, phone: '2888 0823', address: '孫逸仙大馬路', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 0, moto: 50, heavy: 0 } },
-          
-          // 下環 / 內港 / 新馬路
-          { id: '14', name: '栢港停車場', region: '下環 / 內港 / 新馬路', lat: 22.1966, lng: 113.5369, phone: '2893 9168', address: '爹美刁施拿地大馬路', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 2, moto: 150, heavy: 0 } },
-          { id: '15', name: '媽閣交通樞紐停車場', region: '下環 / 內港 / 新馬路', lat: 22.1861, lng: 113.5312, phone: '2896 9988', address: '媽閣', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 20, moto: 200, heavy: 50 } },
-          { id: '16', name: '下環街市停車場', region: '下環 / 內港 / 新馬路', lat: 22.1885, lng: 113.5335, phone: '2893 3311', address: '李加祿街', fees: { day: 6, night: 3 }, capacity: { light: 120, ev: 0, moto: 80, heavy: 0 } },
-          { id: '17', name: '李加祿街停車場', region: '下環 / 內港 / 新馬路', lat: 22.1890, lng: 113.5340, phone: '2893 3322', address: '李加祿街', fees: { day: 6, night: 3 }, capacity: { light: 80, ev: 0, moto: 50, heavy: 0 } },
-          
-          // 筷子基 / 青洲 / 西北區
-          { id: '18', name: '快達樓停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2081, lng: 113.5434, phone: '2822 1111', address: '筷子基', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 10, moto: 200, heavy: 0 } },
-          { id: '19', name: '快富樓停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2090, lng: 113.5420, phone: '2822 2222', address: '筷子基', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 5, moto: 150, heavy: 0 } },
-          { id: '20', name: '快意樓停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2075, lng: 113.5415, phone: '2822 3333', address: '筷子基', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 5, moto: 120, heavy: 0 } },
-          { id: '21', name: '青茂口岸停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2135, lng: 113.5430, phone: '2823 4444', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 500, ev: 20, moto: 300, heavy: 0 } },
-          { id: '22', name: '青葱大廈停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2120, lng: 113.5410, phone: '2823 5555', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 5, moto: 150, heavy: 0 } },
-          { id: '23', name: '青怡大廈停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2110, lng: 113.5425, phone: '2823 6666', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 280, ev: 5, moto: 140, heavy: 0 } },
-          { id: '24', name: '青泉陣停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2140, lng: 113.5440, phone: '2823 7777', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 80, heavy: 0 } },
-          { id: '63', name: '澳門新批發市場停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2138, lng: 113.5415, phone: '2823 4445', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 0, moto: 150, heavy: 100 } },
-          { id: '66', name: '海灣南街停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2050, lng: 113.5400, phone: '2822 4444', address: '沙梨頭', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 80, heavy: 0 } },
-          { id: '67', name: '沙梨頭街市停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.1990, lng: 113.5380, phone: '2822 5555', address: '爹美刁施拿地大馬路', fees: { day: 6, night: 3 }, capacity: { light: 100, ev: 0, moto: 120, heavy: 0 } },
-          { id: '75', name: '快盈大廈停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2060, lng: 113.5420, phone: '2822 6666', address: '筷子基', fees: { day: 6, night: 3 }, capacity: { light: 120, ev: 0, moto: 60, heavy: 0 } },
-          { id: '76', name: '青翠樓停車場', region: '筷子基 / 青洲 / 西北區', lat: 22.2130, lng: 113.5420, phone: '2823 8888', address: '青洲', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 80, heavy: 0 } },
+  /* ─── Constants ─── */
+  const APPCODE = 'APPCODE 09d43a591fba407fb862412970667de4';
+  const API_BASE = 'https://dsat.apigateway.data.gov.mo';
+  const LS_BASE_KEY  = 'mcp_base_v2';
+  const LS_BASE_TS   = 'mcp_base_ts_v2';
+  const HALF_YEAR_MS = 180 * 24 * 60 * 60 * 1000;
+  const REALTIME_INTERVAL = 30000;
+  const FETCH_TIMEOUT = 8000;
 
-          // 北區 / 黑沙環
-          { id: '25', name: '祐漢公園停車場', region: '北區 / 黑沙環', lat: 22.2115, lng: 113.5495, phone: '2848 1111', address: '祐漢', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 5, moto: 100, heavy: 0 } },
-          { id: '26', name: '望廈體育中心停車場', region: '北區 / 黑沙環', lat: 22.2065, lng: 113.5480, phone: '2848 2222', address: '望廈', fees: { day: 6, night: 3 }, capacity: { light: 450, ev: 10, moto: 200, heavy: 0 } },
-          { id: '27', name: '望善樓停車場', region: '北區 / 黑沙環', lat: 22.2055, lng: 113.5490, phone: '2848 3333', address: '望廈', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 5, moto: 100, heavy: 0 } },
-          { id: '28', name: '望賢樓停車場', region: '北區 / 黑沙環', lat: 22.2045, lng: 113.5485, phone: '2848 4444', address: '望廈', fees: { day: 6, night: 3 }, capacity: { light: 180, ev: 5, moto: 80, heavy: 0 } },
-          { id: '29', name: '東北大馬路長者公寓停車場', region: '北區 / 黑沙環', lat: 22.2130, lng: 113.5550, phone: '2848 5555', address: '黑沙環', fees: { day: 6, night: 3 }, capacity: { light: 350, ev: 10, moto: 150, heavy: 0 } },
-          { id: '30', name: '永寧街停車場', region: '北區 / 黑沙環', lat: 22.2140, lng: 113.5520, phone: '2848 6666', address: '黑沙環', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 0, moto: 120, heavy: 0 } },
-          { id: '31', name: '黑沙環公園停車場', region: '北區 / 黑沙環', lat: 22.2125, lng: 113.5560, phone: '2848 7777', address: '黑沙環', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 0, moto: 100, heavy: 0 } },
-          { id: '55', name: '栢麗停車場', region: '北區 / 黑沙環', lat: 22.2020, lng: 113.5470, phone: '2833 0022', address: '俾利喇街', fees: { day: 6, night: 3 }, capacity: { light: 180, ev: 0, moto: 80, heavy: 0 } },
-          { id: '59', name: '信達廣場停車場', region: '北區 / 黑沙環', lat: 22.2100, lng: 113.5500, phone: '2848 0066', address: '黑沙環馬場大馬路', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 0, moto: 100, heavy: 0 } },
-          { id: '60', name: '關閘綜合體育場館停車場', region: '北區 / 黑沙環', lat: 22.2150, lng: 113.5480, phone: '2848 0077', address: '關閘馬路', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 10, moto: 150, heavy: 0 } },
-          { id: '61', name: '望德樓停車場', region: '北區 / 黑沙環', lat: 22.2060, lng: 113.5490, phone: '2848 1112', address: '望廈', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 100, heavy: 0 } },
-          { id: '64', name: '污水處理站停車場', region: '北區 / 黑沙環', lat: 22.2160, lng: 113.5570, phone: '2848 7778', address: '黑沙環', fees: { day: 6, night: 3 }, capacity: { light: 100, ev: 0, moto: 0, heavy: 200 } },
+  /* ─── Static fallback DB (77 parks) ─── */
+  const BUILTIN_DB = [
+    // 中區 / 荷蘭園 / 雀仔園
+    { id:'1',  name:'華士古達嘉馬花園停車場', region:'中區 / 荷蘭園 / 雀仔園', lat:22.1963, lng:113.5461, phone:'2833 7676', address:'東望洋街',             capacity:{light:170,  ev:10, moto:100, heavy:0} },
+    { id:'2',  name:'塔石體育館停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1984, lng:113.5456, phone:'2852 5684', address:'東望洋街塔石體育館',   capacity:{light:150,  ev:5,  moto:50,  heavy:0} },
+    { id:'3',  name:'松山行人隧道停車場',     region:'中區 / 荷蘭園 / 雀仔園', lat:22.1978, lng:113.5489, phone:'2852 3311', address:'羅理基博士大馬路',     capacity:{light:200,  ev:10, moto:80,  heavy:0} },
+    { id:'4',  name:'亞馬喇前地停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1897, lng:113.5434, phone:'2871 1818', address:'亞馬喇前地地庫',       capacity:{light:800,  ev:20, moto:300, heavy:0} },
+    { id:'53', name:'交通事務局大樓停車場',   region:'中區 / 荷蘭園 / 雀仔園', lat:22.2030, lng:113.5480, phone:'8866 6363', address:'馬交石炮台馬路',       capacity:{light:100,  ev:2,  moto:50,  heavy:0} },
+    { id:'54', name:'栢威停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1950, lng:113.5450, phone:'2833 0011', address:'賈伯樂提督街',         capacity:{light:150,  ev:0,  moto:60,  heavy:0} },
+    { id:'56', name:'栢蕙停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1990, lng:113.5490, phone:'2833 0033', address:'荷蘭園大馬路',         capacity:{light:200,  ev:0,  moto:100, heavy:0} },
+    { id:'65', name:'麗都停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1980, lng:113.5430, phone:'2833 0044', address:'沙梨頭',               capacity:{light:120,  ev:0,  moto:50,  heavy:0} },
+    { id:'77', name:'南灣(栢湖)停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1880, lng:113.5400, phone:'2871 3333', address:'南灣',                 capacity:{light:400,  ev:10, moto:150, heavy:0} },
+    // 新口岸 / 皇朝
+    { id:'5',  name:'栢佳停車場',             region:'新口岸 / 皇朝', lat:22.1922, lng:113.5401, phone:'2871 2345', address:'南灣大馬路',                   capacity:{light:200,  ev:5,  moto:80,  heavy:0} },
+    { id:'6',  name:'何賢公園停車場',         region:'新口岸 / 皇朝', lat:22.1901, lng:113.5485, phone:'2870 1122', address:'宋玉生廣場何賢公園',           capacity:{light:300,  ev:10, moto:150, heavy:0} },
+    { id:'7',  name:'藝園停車場',             region:'新口岸 / 皇朝', lat:22.1888, lng:113.5492, phone:'2870 2233', address:'宋玉生廣場藝園',               capacity:{light:250,  ev:5,  moto:120, heavy:0} },
+    { id:'8',  name:'栢嘉停車場',             region:'新口岸 / 皇朝', lat:22.1873, lng:113.5492, phone:'2872 2911', address:'宋玉生廣場',                   capacity:{light:300,  ev:5,  moto:100, heavy:0} },
+    { id:'9',  name:'栢寧停車場',             region:'新口岸 / 皇朝', lat:22.1932, lng:113.5465, phone:'2856 8388', address:'馬六甲街',                     capacity:{light:500,  ev:0,  moto:80,  heavy:0} },
+    { id:'10', name:'科學館公共停車場',       region:'新口岸 / 皇朝', lat:22.1865, lng:113.5552, phone:'2888 0822', address:'孫逸仙大馬路',                 capacity:{light:400,  ev:10, moto:100, heavy:0} },
+    { id:'11', name:'栢樂停車場',             region:'新口岸 / 皇朝', lat:22.1965, lng:113.5555, phone:'2872 8899', address:'外港客運碼頭',                 capacity:{light:600,  ev:0,  moto:150, heavy:0} },
+    { id:'12', name:'栢健停車場',             region:'新口岸 / 皇朝', lat:22.1925, lng:113.5510, phone:'2871 3344', address:'羅理基博士大馬路',             capacity:{light:180,  ev:2,  moto:60,  heavy:0} },
+    { id:'13', name:'觀音像海濱休憩區停車場', region:'新口岸 / 皇朝', lat:22.1850, lng:113.5510, phone:'2833 3322', address:'孫逸仙大馬路',                 capacity:{light:150,  ev:5,  moto:50,  heavy:0} },
+    { id:'62', name:'澳門文化中心停車場',     region:'新口岸 / 皇朝', lat:22.1868, lng:113.5535, phone:'2888 0823', address:'孫逸仙大馬路',                 capacity:{light:200,  ev:0,  moto:50,  heavy:0} },
+    // 下環 / 內港 / 新馬路
+    { id:'14', name:'栢港停車場',             region:'下環 / 內港 / 新馬路', lat:22.1966, lng:113.5369, phone:'2893 9168', address:'爹美刁施拿地大馬路',   capacity:{light:250,  ev:2,  moto:150, heavy:0} },
+    { id:'15', name:'媽閣交通樞紐停車場',     region:'下環 / 內港 / 新馬路', lat:22.1861, lng:113.5312, phone:'2896 9988', address:'媽閣',                 capacity:{light:400,  ev:20, moto:200, heavy:50} },
+    { id:'16', name:'下環街市停車場',         region:'下環 / 內港 / 新馬路', lat:22.1885, lng:113.5335, phone:'2893 3311', address:'李加祿街',             capacity:{light:120,  ev:0,  moto:80,  heavy:0} },
+    { id:'17', name:'李加祿街停車場',         region:'下環 / 內港 / 新馬路', lat:22.1890, lng:113.5340, phone:'2893 3322', address:'李加祿街',             capacity:{light:80,   ev:0,  moto:50,  heavy:0} },
+    // 筷子基 / 青洲 / 西北區
+    { id:'18', name:'快達樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2081, lng:113.5434, phone:'2822 1111', address:'筷子基',             capacity:{light:400,  ev:10, moto:200, heavy:0} },
+    { id:'19', name:'快富樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2090, lng:113.5420, phone:'2822 2222', address:'筷子基',             capacity:{light:300,  ev:5,  moto:150, heavy:0} },
+    { id:'20', name:'快意樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2075, lng:113.5415, phone:'2822 3333', address:'筷子基',             capacity:{light:250,  ev:5,  moto:120, heavy:0} },
+    { id:'21', name:'青茂口岸停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2135, lng:113.5430, phone:'2823 4444', address:'青洲',               capacity:{light:500,  ev:20, moto:300, heavy:0} },
+    { id:'22', name:'青葱大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2120, lng:113.5410, phone:'2823 5555', address:'青洲',               capacity:{light:300,  ev:5,  moto:150, heavy:0} },
+    { id:'23', name:'青怡大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2110, lng:113.5425, phone:'2823 6666', address:'青洲',               capacity:{light:280,  ev:5,  moto:140, heavy:0} },
+    { id:'24', name:'青泉陣停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2140, lng:113.5440, phone:'2823 7777', address:'青洲',               capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
+    { id:'63', name:'澳門新批發市場停車場',   region:'筷子基 / 青洲 / 西北區', lat:22.2138, lng:113.5415, phone:'2823 4445', address:'青洲',               capacity:{light:300,  ev:0,  moto:150, heavy:100} },
+    { id:'66', name:'海灣南街停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2050, lng:113.5400, phone:'2822 4444', address:'沙梨頭',             capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
+    { id:'67', name:'沙梨頭街市停車場',       region:'筷子基 / 青洲 / 西北區', lat:22.1990, lng:113.5380, phone:'2822 5555', address:'爹美刁施拿地大馬路', capacity:{light:100,  ev:0,  moto:120, heavy:0} },
+    { id:'75', name:'快盈大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2060, lng:113.5420, phone:'2822 6666', address:'筷子基',             capacity:{light:120,  ev:0,  moto:60,  heavy:0} },
+    { id:'76', name:'青翠樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2130, lng:113.5420, phone:'2823 8888', address:'青洲',               capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
+    // 北區 / 黑沙環
+    { id:'25', name:'祐漢公園停車場',         region:'北區 / 黑沙環', lat:22.2115, lng:113.5495, phone:'2848 1111', address:'祐漢',                       capacity:{light:300,  ev:5,  moto:100, heavy:0} },
+    { id:'26', name:'望廈體育中心停車場',     region:'北區 / 黑沙環', lat:22.2065, lng:113.5480, phone:'2848 2222', address:'望廈',                       capacity:{light:450,  ev:10, moto:200, heavy:0} },
+    { id:'27', name:'望善樓停車場',           region:'北區 / 黑沙環', lat:22.2055, lng:113.5490, phone:'2848 3333', address:'望廈',                       capacity:{light:200,  ev:5,  moto:100, heavy:0} },
+    { id:'28', name:'望賢樓停車場',           region:'北區 / 黑沙環', lat:22.2045, lng:113.5485, phone:'2848 4444', address:'望廈',                       capacity:{light:180,  ev:5,  moto:80,  heavy:0} },
+    { id:'29', name:'東北大馬路長者公寓停車場',region:'北區 / 黑沙環', lat:22.2130, lng:113.5550, phone:'2848 5555', address:'黑沙環',                     capacity:{light:350,  ev:10, moto:150, heavy:0} },
+    { id:'30', name:'永寧街停車場',           region:'北區 / 黑沙環', lat:22.2140, lng:113.5520, phone:'2848 6666', address:'黑沙環',                     capacity:{light:250,  ev:0,  moto:120, heavy:0} },
+    { id:'31', name:'黑沙環公園停車場',       region:'北區 / 黑沙環', lat:22.2125, lng:113.5560, phone:'2848 7777', address:'黑沙環',                     capacity:{light:200,  ev:0,  moto:100, heavy:0} },
+    { id:'55', name:'栢麗停車場',             region:'北區 / 黑沙環', lat:22.2020, lng:113.5470, phone:'2833 0022', address:'俾利喇街',                   capacity:{light:180,  ev:0,  moto:80,  heavy:0} },
+    { id:'59', name:'信達廣場停車場',         region:'北區 / 黑沙環', lat:22.2100, lng:113.5500, phone:'2848 0066', address:'黑沙環馬場大馬路',           capacity:{light:200,  ev:0,  moto:100, heavy:0} },
+    { id:'60', name:'關閘綜合體育場館停車場', region:'北區 / 黑沙環', lat:22.2150, lng:113.5480, phone:'2848 0077', address:'關閘馬路',                   capacity:{light:300,  ev:10, moto:150, heavy:0} },
+    { id:'61', name:'望德樓停車場',           region:'北區 / 黑沙環', lat:22.2060, lng:113.5490, phone:'2848 1112', address:'望廈',                       capacity:{light:150,  ev:0,  moto:100, heavy:0} },
+    { id:'64', name:'污水處理站停車場',       region:'北區 / 黑沙環', lat:22.2160, lng:113.5570, phone:'2848 7778', address:'黑沙環',                     capacity:{light:100,  ev:0,  moto:0,   heavy:200} },
+    // 港珠澳大橋
+    { id:'32', name:'港珠澳大橋邊檢大樓西停車場', region:'港珠澳大橋', lat:22.2180, lng:113.5700, phone:'2848 8888', address:'港珠澳大橋人工島', capacity:{light:3000, ev:50, moto:0, heavy:0} },
+    { id:'33', name:'港珠澳大橋邊檢大樓東停車場', region:'港珠澳大橋', lat:22.2190, lng:113.5720, phone:'2848 9999', address:'港珠澳大橋人工島', capacity:{light:3000, ev:50, moto:0, heavy:0} },
+    // 氹仔區
+    { id:'34', name:'中央公園停車場 (氹仔)', region:'氹仔區', lat:22.1556, lng:113.5543, phone:'2885 1234', address:'氹仔哥英布拉街',       capacity:{light:1000, ev:50, moto:400, heavy:0} },
+    { id:'35', name:'氹仔客運碼頭停車場',    region:'氹仔區', lat:22.1620, lng:113.5760, phone:'2885 2222', address:'氹仔客運碼頭',         capacity:{light:800,  ev:20, moto:300, heavy:0} },
+    { id:'36', name:'湖畔大廈停車場',        region:'氹仔區', lat:22.1610, lng:113.5580, phone:'2885 3333', address:'氹仔湖畔大廈',         capacity:{light:600,  ev:10, moto:200, heavy:0} },
+    { id:'37', name:'松樹尾停車場',          region:'氹仔區', lat:22.1520, lng:113.5530, phone:'2885 4444', address:'氹仔松樹尾',           capacity:{light:250,  ev:5,  moto:100, heavy:0} },
+    { id:'38', name:'黑橋街停車場',          region:'氹仔區', lat:22.1530, lng:113.5520, phone:'2885 5555', address:'氹仔黑橋街',           capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
+    { id:'39', name:'運動場停車場',          region:'氹仔區', lat:22.1535, lng:113.5480, phone:'2885 6666', address:'氹仔運動場',           capacity:{light:300,  ev:10, moto:150, heavy:0} },
+    { id:'40', name:'日昇樓停車場',          region:'氹仔區', lat:22.1630, lng:113.5620, phone:'2885 7777', address:'氹仔日昇樓',           capacity:{light:400,  ev:10, moto:180, heavy:0} },
+    { id:'41', name:'泉福新邨停車場',        region:'氹仔區', lat:22.1540, lng:113.5550, phone:'2885 8888', address:'氹仔泉福',             capacity:{light:200,  ev:5,  moto:100, heavy:0} },
+    { id:'57', name:'華寶花園停車場',        region:'氹仔區', lat:22.1560, lng:113.5510, phone:'2885 0044', address:'氹仔布拉干薩街',       capacity:{light:120,  ev:0,  moto:50,  heavy:0} },
+    { id:'58', name:'南新花園停車場',        region:'氹仔區', lat:22.1580, lng:113.5500, phone:'2885 0055', address:'氹仔廣東大馬路',       capacity:{light:150,  ev:0,  moto:60,  heavy:0} },
+    { id:'68', name:'日暉大廈停車場',        region:'氹仔區', lat:22.1640, lng:113.5630, phone:'2885 8889', address:'氹仔',                 capacity:{light:150,  ev:0,  moto:50,  heavy:0} },
+    { id:'70', name:'柯維納馬路重型客車停車場', region:'氹仔區', lat:22.1525, lng:113.5490, phone:'2885 6667', address:'氹仔柯維納馬路',   capacity:{light:0,    ev:0,  moto:0,   heavy:100} },
+    { id:'73', name:'機場南停車場',          region:'氹仔區', lat:22.1450, lng:113.5750, phone:'2886 1111', address:'澳門國際機場',         capacity:{light:300,  ev:0,  moto:0,   heavy:0} },
+    { id:'74', name:'機場北停車場',          region:'氹仔區', lat:22.1500, lng:113.5750, phone:'2886 2222', address:'澳門國際機場',         capacity:{light:300,  ev:0,  moto:0,   heavy:0} },
+    // 路氹 / 澳大
+    { id:'42', name:'澳大P1停車場',          region:'路氹 / 澳大', lat:22.1330, lng:113.5420, phone:'2888 1111', address:'橫琴澳大校區',   capacity:{light:300,  ev:10, moto:100, heavy:0} },
+    { id:'43', name:'澳大P3停車場',          region:'路氹 / 澳大', lat:22.1310, lng:113.5460, phone:'2888 2222', address:'橫琴澳大校區',   capacity:{light:350,  ev:10, moto:120, heavy:0} },
+    { id:'44', name:'澳大P5停車場',          region:'路氹 / 澳大', lat:22.1350, lng:113.5450, phone:'2888 3333', address:'橫琴澳大校區',   capacity:{light:280,  ev:5,  moto:80,  heavy:0} },
+    { id:'45', name:'離島醫院公共停車場',    region:'路氹 / 澳大', lat:22.1400, lng:113.5580, phone:'2888 4444', address:'路氹連貫公路',   capacity:{light:500,  ev:20, moto:200, heavy:0} },
+    { id:'71', name:'澳大P6停車場',          region:'路氹 / 澳大', lat:22.1320, lng:113.5470, phone:'2888 4445', address:'橫琴澳大校區',   capacity:{light:200,  ev:5,  moto:80,  heavy:0} },
+    { id:'72', name:'澳大P1A停車場',         region:'路氹 / 澳大', lat:22.1340, lng:113.5410, phone:'2888 1112', address:'橫琴澳大校區',   capacity:{light:150,  ev:0,  moto:50,  heavy:0} },
+    // 路環區
+    { id:'46', name:'和諧廣場停車場',        region:'路環區', lat:22.1384, lng:113.5567, phone:'2888 2222', address:'路環石排灣',           capacity:{light:600,  ev:20, moto:300, heavy:0} },
+    { id:'47', name:'石排灣居雅大廈停車場',  region:'路環區', lat:22.1390, lng:113.5580, phone:'2888 5555', address:'路環石排灣',           capacity:{light:400,  ev:10, moto:150, heavy:0} },
+    { id:'48', name:'石排灣業興大廈停車場',  region:'路環區', lat:22.1375, lng:113.5590, phone:'2888 6666', address:'路環石排灣',           capacity:{light:350,  ev:10, moto:120, heavy:0} },
+    { id:'49', name:'石排灣樂群樓停車場',    region:'路環區', lat:22.1380, lng:113.5575, phone:'2888 7777', address:'路環石排灣',           capacity:{light:450,  ev:15, moto:180, heavy:0} },
+    { id:'50', name:'蝴蝶谷大馬路總站停車場',region:'路環區', lat:22.1360, lng:113.5560, phone:'2888 8888', address:'路環石排灣',           capacity:{light:250,  ev:5,  moto:100, heavy:0} },
+    { id:'51', name:'聯生工業邨停車場',      region:'路環區', lat:22.1320, lng:113.5540, phone:'2888 9999', address:'路環聯生',             capacity:{light:300,  ev:5,  moto:100, heavy:0} },
+    { id:'52', name:'黑沙海灘公園停車場',    region:'路環區', lat:22.1180, lng:113.5700, phone:'2888 0000', address:'路環黑沙',             capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
+    { id:'69', name:'聯生圓形地停車場',      region:'路環區', lat:22.1330, lng:113.5530, phone:'2888 9998', address:'路環',                 capacity:{light:100,  ev:0,  moto:50,  heavy:0} }
+  ];
 
-          // 港珠澳大橋
-          { id: '32', name: '港珠澳大橋邊檢大樓西停車場', region: '港珠澳大橋', lat: 22.2180, lng: 113.5700, phone: '2848 8888', address: '港珠澳大橋人工島', fees: { day: 6, night: 3 }, capacity: { light: 3000, ev: 50, moto: 0, heavy: 0 } },
-          { id: '33', name: '港珠澳大橋邊檢大樓東停車場', region: '港珠澳大橋', lat: 22.2190, lng: 113.5720, phone: '2848 9999', address: '港珠澳大橋人工島', fees: { day: 6, night: 3 }, capacity: { light: 3000, ev: 50, moto: 0, heavy: 0 } },
-          
-          // 氹仔區
-          { id: '34', name: '中央公園停車場 (氹仔)', region: '氹仔區', lat: 22.1556, lng: 113.5543, phone: '2885 1234', address: '氹仔哥英布拉街', fees: { day: 6, night: 3 }, capacity: { light: 1000, ev: 50, moto: 400, heavy: 0 } },
-          { id: '35', name: '氹仔客運碼頭停車場', region: '氹仔區', lat: 22.1620, lng: 113.5760, phone: '2885 2222', address: '氹仔客運碼頭', fees: { day: 6, night: 3 }, capacity: { light: 800, ev: 20, moto: 300, heavy: 0 } },
-          { id: '36', name: '湖畔大廈停車場', region: '氹仔區', lat: 22.1610, lng: 113.5580, phone: '2885 3333', address: '氹仔湖畔大廈', fees: { day: 6, night: 3 }, capacity: { light: 600, ev: 10, moto: 200, heavy: 0 } },
-          { id: '37', name: '松樹尾停車場', region: '氹仔區', lat: 22.1520, lng: 113.5530, phone: '2885 4444', address: '氹仔松樹尾', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 5, moto: 100, heavy: 0 } },
-          { id: '38', name: '黑橋街停車場', region: '氹仔區', lat: 22.1530, lng: 113.5520, phone: '2885 5555', address: '氹仔黑橋街', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 80, heavy: 0 } },
-          { id: '39', name: '運動場停車場', region: '氹仔區', lat: 22.1535, lng: 113.5480, phone: '2885 6666', address: '氹仔運動場', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 10, moto: 150, heavy: 0 } },
-          { id: '40', name: '日昇樓停車場', region: '氹仔區', lat: 22.1630, lng: 113.5620, phone: '2885 7777', address: '氹仔日昇樓', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 10, moto: 180, heavy: 0 } },
-          { id: '41', name: '泉福新邨停車場', region: '氹仔區', lat: 22.1540, lng: 113.5550, phone: '2885 8888', address: '氹仔泉福', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 5, moto: 100, heavy: 0 } },
-          { id: '57', name: '華寶花園停車場', region: '氹仔區', lat: 22.1560, lng: 113.5510, phone: '2885 0044', address: '氹仔布拉干薩街', fees: { day: 6, night: 3 }, capacity: { light: 120, ev: 0, moto: 50, heavy: 0 } },
-          { id: '58', name: '南新花園停車場', region: '氹仔區', lat: 22.1580, lng: 113.5500, phone: '2885 0055', address: '氹仔廣東大馬路', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 60, heavy: 0 } },
-          { id: '68', name: '日暉大廈停車場', region: '氹仔區', lat: 22.1640, lng: 113.5630, phone: '2885 8889', address: '氹仔', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 50, heavy: 0 } },
-          { id: '70', name: '柯維納馬路重型客車停車場', region: '氹仔區', lat: 22.1525, lng: 113.5490, phone: '2885 6667', address: '氹仔柯維納馬路', fees: { day: 6, night: 3 }, capacity: { light: 0, ev: 0, moto: 0, heavy: 100 } },
-          { id: '73', name: '機場南停車場', region: '氹仔區', lat: 22.1450, lng: 113.5750, phone: '2886 1111', address: '澳門國際機場', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 0, moto: 0, heavy: 0 } },
-          { id: '74', name: '機場北停車場', region: '氹仔區', lat: 22.1500, lng: 113.5750, phone: '2886 2222', address: '澳門國際機場', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 0, moto: 0, heavy: 0 } },
+  const REGIONS = [
+    '全部','北區 / 黑沙環','筷子基 / 青洲 / 西北區','中區 / 荷蘭園 / 雀仔園',
+    '新口岸 / 皇朝','下環 / 內港 / 新馬路','氹仔區','路氹 / 澳大','路環區','港珠澳大橋'
+  ];
 
-          // 路氹 / 澳大
-          { id: '42', name: '澳大P1停車場', region: '路氹 / 澳大', lat: 22.1330, lng: 113.5420, phone: '2888 1111', address: '橫琴澳大校區', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 10, moto: 100, heavy: 0 } },
-          { id: '43', name: '澳大P3停車場', region: '路氹 / 澳大', lat: 22.1310, lng: 113.5460, phone: '2888 2222', address: '橫琴澳大校區', fees: { day: 6, night: 3 }, capacity: { light: 350, ev: 10, moto: 120, heavy: 0 } },
-          { id: '44', name: '澳大P5停車場', region: '路氹 / 澳大', lat: 22.1350, lng: 113.5450, phone: '2888 3333', address: '橫琴澳大校區', fees: { day: 6, night: 3 }, capacity: { light: 280, ev: 5, moto: 80, heavy: 0 } },
-          { id: '45', name: '離島醫院公共停車場', region: '路氹 / 澳大', lat: 22.1400, lng: 113.5580, phone: '2888 4444', address: '路氹連貫公路', fees: { day: 6, night: 3 }, capacity: { light: 500, ev: 20, moto: 200, heavy: 0 } },
-          { id: '71', name: '澳大P6停車場', region: '路氹 / 澳大', lat: 22.1320, lng: 113.5470, phone: '2888 4445', address: '橫琴澳大校區', fees: { day: 6, night: 3 }, capacity: { light: 200, ev: 5, moto: 80, heavy: 0 } },
-          { id: '72', name: '澳大P1A停車場', region: '路氹 / 澳大', lat: 22.1340, lng: 113.5410, phone: '2888 1112', address: '橫琴澳大校區', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 50, heavy: 0 } },
+  /* ─── Utility ─── */
+  function calcDistance(lat1, lon1, lat2, lon2) {
+    var R = 6371000;
+    var f1 = lat1 * Math.PI / 180, f2 = lat2 * Math.PI / 180;
+    var df = (lat2 - lat1) * Math.PI / 180, dl = (lon2 - lon1) * Math.PI / 180;
+    var a = Math.sin(df/2)*Math.sin(df/2) + Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)*Math.sin(dl/2);
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  }
 
-          // 路環區
-          { id: '46', name: '和諧廣場停車場', region: '路環區', lat: 22.1384, lng: 113.5567, phone: '2888 2222', address: '路環石排灣', fees: { day: 6, night: 3 }, capacity: { light: 600, ev: 20, moto: 300, heavy: 0 } },
-          { id: '47', name: '石排灣居雅大廈停車場', region: '路環區', lat: 22.1390, lng: 113.5580, phone: '2888 5555', address: '路環石排灣', fees: { day: 6, night: 3 }, capacity: { light: 400, ev: 10, moto: 150, heavy: 0 } },
-          { id: '48', name: '石排灣業興大廈停車場', region: '路環區', lat: 22.1375, lng: 113.5590, phone: '2888 6666', address: '路環石排灣', fees: { day: 6, night: 3 }, capacity: { light: 350, ev: 10, moto: 120, heavy: 0 } },
-          { id: '49', name: '石排灣樂群樓停車場', region: '路環區', lat: 22.1380, lng: 113.5575, phone: '2888 7777', address: '路環石排灣', fees: { day: 6, night: 3 }, capacity: { light: 450, ev: 15, moto: 180, heavy: 0 } },
-          { id: '50', name: '蝴蝶谷大馬路總站停車場', region: '路環區', lat: 22.1360, lng: 113.5560, phone: '2888 8888', address: '路環石排灣', fees: { day: 6, night: 3 }, capacity: { light: 250, ev: 5, moto: 100, heavy: 0 } },
-          { id: '51', name: '聯生工業邨停車場', region: '路環區', lat: 22.1320, lng: 113.5540, phone: '2888 9999', address: '路環聯生', fees: { day: 6, night: 3 }, capacity: { light: 300, ev: 5, moto: 100, heavy: 0 } },
-          { id: '52', name: '黑沙海灘公園停車場', region: '路環區', lat: 22.1180, lng: 113.5700, phone: '2888 0000', address: '路環黑沙', fees: { day: 6, night: 3 }, capacity: { light: 150, ev: 0, moto: 80, heavy: 0 } },
-          { id: '69', name: '聯生圓形地停車場', region: '路環區', lat: 22.1330, lng: 113.5530, phone: '2888 9998', address: '路環', fees: { day: 6, night: 3 }, capacity: { light: 100, ev: 0, moto: 50, heavy: 0 } }
-        ];
+  function feeInfo() {
+    var h = new Date().getHours();
+    return (h >= 8 && h < 20) ? { fee:6, label:'日間 08:00-20:00' } : { fee:3, label:'夜間 20:00-08:00' };
+  }
 
-        function App() {
-          const [userLocation, setUserLocation] = useState(null);
-          const [radius, setRadius] = useState(1000); 
-          const [sortBy, setSortBy] = useState('distance'); 
-          const [vehicleType, setVehicleType] = useState('light'); 
-          const [selectedRegion, setSelectedRegion] = useState('全部'); 
-          
-          // 修改：將基礎數據獨立存放，不再依賴定位坐標
-          const [baseParksData, setBaseParksData] = useState([]); 
-          const [loading, setLoading] = useState(false);
-          const [error, setError] = useState(null);
-          const [activeNavId, setActiveNavId] = useState(null); 
-          const [lastUpdated, setLastUpdated] = useState(null);
+  function getVal(el, tags) {
+    for (var i = 0; i < tags.length; i++) {
+      var nodes = el.getElementsByTagName(tags[i]);
+      if (nodes.length > 0 && nodes[0].textContent.trim()) {
+        return nodes[0].textContent.trim();
+      }
+    }
+    return '';
+  }
 
-          // 接上澳門政府真實 API 的邏輯
-          const fetchRealtimeData = async () => {
-            try {
-              const targetUrl = encodeURIComponent('https://api.data.gov.mo/document/download/ea50a770-cc35-47cc-a3ba-7f60092d4bc4?token=5noP7ySJuj4qVTPB0qZdg1pzJQvezRypy&isNeedFile=0&lang=TC');
-              const res = await fetch(`https://api.allorigins.win/get?url=${targetUrl}`);
-              const json = await res.json();
-              
-              if (json && json.contents) {
-                const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(json.contents, "text/xml");
-                const carParks = xmlDoc.getElementsByTagName("Car_park_info");
-                
-                if (carParks.length > 0) {
-                  let results = [];
-                  for (let i = 0; i < carParks.length; i++) {
-                    const cp = carParks[i];
-                    const nameNode = cp.getElementsByTagName("Title")[0] || cp.getElementsByTagName("name")[0];
-                    const name = nameNode ? nameNode.textContent : "";
-                    
-                    const lightNode = cp.getElementsByTagName("light_car")[0];
-                    const lightText = lightNode ? lightNode.textContent : "0";
-                    
-                    const motoNode = cp.getElementsByTagName("motorcycle")[0];
-                    const motoText = motoNode ? motoNode.textContent : "0";
-                    
-                    if(name) {
-                        results.push({
-                          id: name,
-                          name: name,
-                          spaces: { 
-                              light: parseInt(lightText) || 0, 
-                              ev: 0, 
-                              moto: parseInt(motoText) || 0, 
-                              heavy: 0 
-                          }
-                        });
-                    }
-                  }
-                  if (results.length > 0) {
-                      return results;
-                  }
-                }
+  function toInt(s) { return parseInt(s, 10) || 0; }
+  function toFloat(s) { return parseFloat(s) || 0; }
+
+  /* ─── XML Parsers ─── */
+  function parseMaintenanceXml(text) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(text, 'text/xml');
+    var items = doc.getElementsByTagName('carparkInfo');
+    if (!items.length) items = doc.getElementsByTagName('CarParkInfo');
+    if (!items.length) items = doc.getElementsByTagName('Car_park_info');
+    var result = [];
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var no   = getVal(el, ['CAR_PARK_NO','car_park_no','NO','id']);
+      var name = getVal(el, ['CNAME','cname','Title','name','ENAME']);
+      var lc   = toInt(getVal(el, ['CAR_CNT','car_cnt','light_car','LIGHT_CNT','CAR']));
+      var mo   = toInt(getVal(el, ['MO_CNT','mo_cnt','MB_CNT','motorcycle','MOTO_CNT','MOTO']));
+      var ev   = toInt(getVal(el, ['EV_CNT','ev_cnt','EV']));
+      var hv   = toInt(getVal(el, ['HEAVY_CNT','heavy_cnt','HEAVY']));
+      if (name || no) {
+        result.push({ no: no, name: name, light: lc, moto: mo, ev: ev, heavy: hv });
+      }
+    }
+    return result;
+  }
+
+  function parseDetailXml(text) {
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(text, 'text/xml');
+    var items = doc.getElementsByTagName('carparkInfo');
+    if (!items.length) items = doc.getElementsByTagName('CarParkInfo');
+    var result = [];
+    for (var i = 0; i < items.length; i++) {
+      var el = items[i];
+      var no      = getVal(el, ['CAR_PARK_NO','car_park_no','NO']);
+      var cname   = getVal(el, ['CNAME','cname','Title','name']);
+      var addr    = getVal(el, ['ADDRESS_C','address_c','ADDRESS','address']);
+      var phone   = getVal(el, ['PHONE','phone','TEL','tel']);
+      var lat     = toFloat(getVal(el, ['LATITUDE','latitude','LAT','lat']));
+      var lng     = toFloat(getVal(el, ['LONGITUDE','longitude','LNG','lng']));
+      var tLight  = toInt(getVal(el, ['TOTAL_CAR','total_car','CAR_CAPACITY','TOTAL_LIGHT']));
+      var tMoto   = toInt(getVal(el, ['TOTAL_MOTO','total_moto','MOTO_CAPACITY']));
+      var tEv     = toInt(getVal(el, ['TOTAL_EV','total_ev','EV_CAPACITY']));
+      var tHeavy  = toInt(getVal(el, ['TOTAL_HEAVY','total_heavy','HEAVY_CAPACITY']));
+      if (cname && lat && lng) {
+        result.push({ id: no, name: cname, address: addr, phone: phone,
+          lat: lat, lng: lng,
+          capacity: { light: tLight, moto: tMoto, ev: tEv, heavy: tHeavy } });
+      }
+    }
+    return result;
+  }
+
+  /* ─── CORS-Proxy Fetch ─── */
+  function makeFetchWithTimeout(url, headers, timeout) {
+    return new Promise(function(resolve, reject) {
+      var ctrl = new AbortController();
+      var tid = setTimeout(function() { ctrl.abort(); reject(new Error('timeout')); }, timeout);
+      fetch(url, { headers: headers, signal: ctrl.signal })
+        .then(function(r) { clearTimeout(tid); resolve(r); })
+        .catch(function(e) { clearTimeout(tid); reject(e); });
+    });
+  }
+
+  function fetchViaProxies(path) {
+    var targetUrl = API_BASE + path;
+    var authHeaders = { 'Authorization': APPCODE };
+
+    var attempts = [
+      function() {
+        return makeFetchWithTimeout(targetUrl, authHeaders, FETCH_TIMEOUT)
+          .then(function(r) { return r.text(); });
+      },
+      function() {
+        var proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(targetUrl);
+        return makeFetchWithTimeout(proxyUrl, {
+          'x-cors-headers': JSON.stringify({ 'Authorization': APPCODE })
+        }, FETCH_TIMEOUT).then(function(r) { return r.text(); });
+      },
+      function() {
+        var proxyUrl = 'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl + '?auth=' + encodeURIComponent(APPCODE));
+        return makeFetchWithTimeout(proxyUrl, {}, FETCH_TIMEOUT)
+          .then(function(r) { return r.json(); })
+          .then(function(j) { return j && j.contents ? j.contents : Promise.reject(new Error('empty')); });
+      },
+      function() {
+        var proxyUrl = 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(targetUrl);
+        return makeFetchWithTimeout(proxyUrl, authHeaders, FETCH_TIMEOUT)
+          .then(function(r) { return r.text(); });
+      }
+    ];
+
+    function tryNext(idx) {
+      if (idx >= attempts.length) return Promise.reject(new Error('all proxies failed'));
+      return attempts[idx]().catch(function() { return tryNext(idx + 1); });
+    }
+    return tryNext(0);
+  }
+
+  /* ─── localStorage helpers ─── */
+  function loadStoredBase() {
+    try {
+      var raw = localStorage.getItem(LS_BASE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch(e) {}
+    return null;
+  }
+
+  function saveStoredBase(data) {
+    try {
+      localStorage.setItem(LS_BASE_KEY, JSON.stringify(data));
+      localStorage.setItem(LS_BASE_TS, new Date().toISOString());
+    } catch(e) {}
+  }
+
+  function loadBaseSyncTs() {
+    try { return localStorage.getItem(LS_BASE_TS) || null; } catch(e) { return null; }
+  }
+
+  function clearStoredBase() {
+    try {
+      localStorage.removeItem(LS_BASE_KEY);
+      localStorage.removeItem(LS_BASE_TS);
+    } catch(e) {}
+  }
+
+  /* ─── Merge base + realtime ─── */
+  function mergeParks(baseList, realtimeArr) {
+    var rtMap = {};
+    for (var i = 0; i < realtimeArr.length; i++) {
+      var r = realtimeArr[i];
+      if (r.no) rtMap[String(r.no)] = r;
+    }
+
+    return baseList.map(function(park) {
+      var rt = rtMap[String(park.id)];
+      if (!rt) {
+        for (var k = 0; k < realtimeArr.length; k++) {
+          var rr = realtimeArr[k];
+          if (rr.name && (rr.name.indexOf(park.name) !== -1 || park.name.indexOf(rr.name) !== -1)) {
+            rt = rr;
+            break;
+          }
+        }
+      }
+      var spaces = rt ? { light: rt.light, moto: rt.moto, ev: rt.ev, heavy: rt.heavy }
+                      : null;
+      var fi = feeInfo();
+      return Object.assign({}, park, {
+        spaces: spaces,
+        hasRealtime: !!rt,
+        currentFee: fi.fee,
+        feeLabel: fi.label
+      });
+    });
+  }
+
+  /* ─── Main App ─── */
+  function App() {
+    var storedTs = loadBaseSyncTs();
+    var syncOld = storedTs && (Date.now() - new Date(storedTs).getTime() > HALF_YEAR_MS);
+
+    var [parksBase, setParksBase]             = useState(loadStoredBase() || BUILTIN_DB);
+    var [realtimeArr, setRealtimeArr]         = useState([]);
+    var [connStatus, setConnStatus]           = useState('init'); // 'init'|'ok'|'delayed'|'error'
+    var [lastRtTs, setLastRtTs]               = useState(null);
+    var [rtLoading, setRtLoading]             = useState(false);
+    var [userLocation, setUserLocation]       = useState(null);
+    var [locationLabel, setLocationLabel]     = useState('');
+    var [radius, setRadius]                   = useState(1000);
+    var [vehicleType, setVehicleType]         = useState('light');
+    var [selectedRegion, setSelectedRegion]   = useState('全部');
+    var [sortBy, setSortBy]                   = useState('spaces');
+    var [activeNavId, setActiveNavId]         = useState(null);
+    var [gpsError, setGpsError]               = useState(null);
+    var [searchText, setSearchText]           = useState('');
+    var [suggestions, setSuggestions]         = useState([]);
+    var [showSugg, setShowSugg]               = useState(false);
+    var [searchLoading, setSearchLoading]     = useState(false);
+    var [showSettings, setShowSettings]       = useState(false);
+    var [baseSyncLoading, setBaseSyncLoading] = useState(false);
+    var [baseSyncMsg, setBaseSyncMsg]         = useState('');
+    var [lastBaseSync, setLastBaseSync]       = useState(storedTs);
+    var [syncReminder, setSyncReminder]       = useState(syncOld);
+    var lastRtTsRef = useRef(null);
+    lastRtTsRef.current = lastRtTs;
+
+    /* fetch realtime spaces */
+    var fetchRealtime = useCallback(function(isBackground) {
+      if (!isBackground) setRtLoading(true);
+      return fetchViaProxies('/car_park_maintance')
+        .then(function(text) {
+          var arr = parseMaintenanceXml(text);
+          if (arr.length === 0) return Promise.reject(new Error('empty response'));
+          setRealtimeArr(arr);
+          var now = new Date();
+          setLastRtTs(now);
+          setConnStatus('ok');
+        })
+        .catch(function() {
+          var prev = lastRtTsRef.current;
+          if (prev && (Date.now() - prev.getTime()) < 120000) {
+            setConnStatus('delayed');
+          } else {
+            setConnStatus('error');
+          }
+        })
+        .then(function() {
+          if (!isBackground) setRtLoading(false);
+        });
+    }, []);
+
+    /* sync base data from detail API */
+    var syncBaseData = useCallback(function() {
+      setBaseSyncLoading(true);
+      setBaseSyncMsg('');
+      return fetchViaProxies('/car_park_detail')
+        .then(function(text) {
+          var parsed = parseDetailXml(text);
+          if (parsed.length === 0) return Promise.reject(new Error('empty'));
+          var merged = BUILTIN_DB.map(function(b) {
+            var remote = null;
+            for (var i = 0; i < parsed.length; i++) {
+              var p = parsed[i];
+              if ((p.id && String(p.id) === String(b.id)) ||
+                  (p.name && (p.name.indexOf(b.name) !== -1 || b.name.indexOf(p.name) !== -1))) {
+                remote = p;
+                break;
               }
-              throw new Error("無效的數據格式");
-            } catch (err) {
-              console.warn("真實政府 API 獲取失敗:", err);
-              throw err;
             }
-          };
-
-          // 新增：載入並合併基礎資料（無須 GPS 即可呼叫）
-          const loadBaseData = async (isBackground = false) => {
-            if (!isBackground) setLoading(true);
-            try {
-              const realtimeData = await fetchRealtimeData();
-              if (realtimeData) {
-                setLastUpdated(new Date());
-                setError(null);
-                const processedParks = MACAU_CARPARKS_DB.map(park => {
-                  const realtimeInfo = realtimeData.find(d => 
-                      d.name.includes(park.name) || park.name.includes(d.name)
-                  );
-                  
-                  const spaces = realtimeInfo ? realtimeInfo.spaces : { light: 0, ev: 0, moto: 0, heavy: 0 };
-                  const totalSpaces = spaces.light + spaces.ev + spaces.moto + spaces.heavy;
-                  const currentFeeInfo = getCurrentFeeInfo(park.fees);
-
-                  return {
-                    ...park,
-                    spaces,
-                    totalSpaces,
-                    currentFee: currentFeeInfo.fee,
-                    feeLabel: currentFeeInfo.label,
-                    capacity: park.capacity
-                  };
-                });
-                setBaseParksData(processedParks);
+            if (!remote) return b;
+            return Object.assign({}, b, {
+              name:    remote.name    || b.name,
+              address: remote.address || b.address,
+              phone:   remote.phone   || b.phone,
+              lat:     remote.lat     || b.lat,
+              lng:     remote.lng     || b.lng,
+              capacity: {
+                light: remote.capacity.light || b.capacity.light,
+                moto:  remote.capacity.moto  || b.capacity.moto,
+                ev:    remote.capacity.ev    || b.capacity.ev,
+                heavy: remote.capacity.heavy || b.capacity.heavy
               }
-            } catch (err) {
-              setError("無法讀取政府數據，請稍後再試。");
-              const processedParks = MACAU_CARPARKS_DB.map(park => {
-                const currentFeeInfo = getCurrentFeeInfo(park.fees);
-                return {
-                  ...park,
-                  spaces: { light: 0, ev: 0, moto: 0, heavy: 0 },
-                  totalSpaces: 0,
-                  currentFee: currentFeeInfo.fee,
-                  feeLabel: currentFeeInfo.label,
-                  capacity: park.capacity
-                };
-              });
-              setBaseParksData(processedParks);
-            } finally {
-              if (!isBackground) setLoading(false);
-            }
-          };
-
-          // 初次掛載時及每 30 秒自動更新
-          useEffect(() => {
-            loadBaseData(false); // 初始載入（會顯示轉圈動畫）
-            const timer = setInterval(() => {
-              loadBaseData(true); // 背景安靜載入
-            }, 30000); 
-            return () => clearInterval(timer); 
-          }, []);
-
-          const calculateDistance = (lat1, lon1, lat2, lon2) => {
-            const R = 6371e3; 
-            const φ1 = lat1 * Math.PI / 180;
-            const φ2 = lat2 * Math.PI / 180;
-            const Δφ = (lat2 - lat1) * Math.PI / 180;
-            const Δλ = (lon2 - lon1) * Math.PI / 180;
-
-            const a = Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-                      Math.cos(φ1) * Math.cos(φ2) *
-                      Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-            return R * c; 
-          };
-
-          const getCurrentFeeInfo = (fees) => {
-            const hour = new Date().getHours();
-            const isDayTime = hour >= 8 && hour < 20; 
-            const currentFee = isDayTime ? fees.day : fees.night;
-            const timeLabel = isDayTime ? '日間 08:00-20:00' : '夜間 20:00-08:00';
-            return { fee: currentFee, label: timeLabel };
-          };
-
-          const openMap = (type, lat, lng, name) => {
-            let url = '';
-            if (type === 'google') {
-              url = `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-            } else if (type === 'apple') {
-              url = `http://maps.apple.com/?daddr=${lat},${lng}`;
-            } else if (type === 'amap') {
-              url = `https://uri.amap.com/navigation?to=${lng},${lat},${name}&mode=car`;
-            }
-            window.open(url, '_blank');
-          };
-
-          const getRelevantSpaces = (park, type) => {
-            if (type === 'light') return park.spaces.light;
-            if (type === 'ev') return park.spaces.ev;
-            if (type === 'moto') return park.spaces.moto;
-            return park.totalSpaces;
-          };
-
-          const regionStats = useMemo(() => {
-            if (!baseParksData.length) return null;
-            let targetParks = selectedRegion === '全部' ? baseParksData : baseParksData.filter(p => p.region === selectedRegion);
-            
-            let stats = {
-              light: { available: 0, total: 0 },
-              ev: { available: 0, total: 0 },
-              moto: { available: 0, total: 0 },
-              heavy: { available: 0, total: 0 }
-            };
-
-            targetParks.forEach(p => {
-              stats.light.available += p.spaces.light;
-              stats.light.total += p.capacity.light;
-              stats.ev.available += p.spaces.ev;
-              stats.ev.total += p.capacity.ev;
-              stats.moto.available += p.spaces.moto;
-              stats.moto.total += p.capacity.moto;
-              stats.heavy.available += p.spaces.heavy;
-              stats.heavy.total += p.capacity.heavy;
             });
-            return { count: targetParks.length, stats };
-          }, [baseParksData, selectedRegion]);
+          });
+          saveStoredBase(merged);
+          setParksBase(merged);
+          var ts = new Date().toISOString();
+          setLastBaseSync(ts);
+          setSyncReminder(false);
+          setBaseSyncMsg('同步成功！已更新 ' + parsed.length + ' 個停車場資料。');
+        })
+        .catch(function(e) {
+          setBaseSyncMsg('同步失敗：' + (e && e.message ? e.message : '網絡錯誤，請稍後再試'));
+        })
+        .then(function() {
+          setBaseSyncLoading(false);
+        });
+    }, []);
 
-          // 動態計算距離及排序 (綁定 useLocation 變化)
-          const displayedParks = useMemo(() => {
-            if (!baseParksData.length) return [];
-            
-            // 賦予動態距離
-            let filtered = baseParksData.map(park => {
-                if (userLocation) {
-                    const dist = calculateDistance(userLocation.lat, userLocation.lng, park.lat, park.lng);
-                    return { ...park, distance: Math.round(dist) };
-                }
-                return { ...park, distance: null };
-            });
-            
-            if (selectedRegion !== '全部') {
-                filtered = filtered.filter(park => park.region === selectedRegion);
-            }
+    /* factory reset */
+    var factoryReset = useCallback(function() {
+      if (!window.confirm('確定要恢復出廠設定？這將清除所有同步的停車場資料。')) return;
+      clearStoredBase();
+      setParksBase(BUILTIN_DB);
+      setLastBaseSync(null);
+      setSyncReminder(false);
+      setBaseSyncMsg('已恢復出廠設定。');
+    }, []);
 
-            if (userLocation && radius !== Infinity) {
-                filtered = filtered.filter(park => park.distance !== null && park.distance <= radius);
-            }
+    /* on mount: initial realtime fetch + interval */
+    useEffect(function() {
+      fetchRealtime(false);
+      var timer = setInterval(function() { fetchRealtime(true); }, REALTIME_INTERVAL);
+      return function() { clearInterval(timer); };
+    }, [fetchRealtime]);
 
-            filtered.sort((a, b) => {
-              const aSpaces = getRelevantSpaces(a, vehicleType);
-              const bSpaces = getRelevantSpaces(b, vehicleType);
-              const aEmpty = aSpaces === 0;
-              const bEmpty = bSpaces === 0;
+    /* search autocomplete */
+    var handleSearchInput = useCallback(function(val) {
+      setSearchText(val);
+      if (val.length < 2) {
+        setSuggestions([]);
+        setShowSugg(false);
+        return;
+      }
+      var lower = val.toLowerCase();
+      var matches = parksBase.filter(function(p) {
+        return p.name.toLowerCase().indexOf(lower) !== -1;
+      }).slice(0, 5);
+      setSuggestions(matches);
+      setShowSugg(matches.length > 0);
+    }, [parksBase]);
 
-              if (aEmpty && !bEmpty) return 1;
-              if (!aEmpty && bEmpty) return -1;
+    var handleSuggClick = useCallback(function(park) {
+      setSearchText(park.name);
+      setSuggestions([]);
+      setShowSugg(false);
+      setUserLocation({ lat: park.lat, lng: park.lng });
+      setLocationLabel('搜尋：' + park.name);
+      setSelectedRegion('全部');
+      setRadius(Infinity);
+    }, []);
 
-              if (sortBy === 'distance') {
-                  if (a.distance !== null && b.distance !== null) {
-                      return a.distance - b.distance;
-                  }
-                  return 0; // 若無定位資訊則保持原有順序
-              }
-              if (sortBy === 'spaces') return bSpaces - aSpaces;
-              if (sortBy === 'fee') return a.currentFee - b.currentFee;
-              return 0;
-            });
+    var handleSearchSubmit = useCallback(function() {
+      setShowSugg(false);
+      if (!searchText.trim()) return;
+      var lower = searchText.toLowerCase();
+      var exact = parksBase.find(function(p) {
+        return p.name.toLowerCase().indexOf(lower) !== -1;
+      });
+      if (exact) {
+        handleSuggClick(exact);
+        return;
+      }
+      setSearchLoading(true);
+      var nomUrl = 'https://nominatim.openstreetmap.org/search?q=' +
+        encodeURIComponent(searchText + ' 澳門') +
+        '&format=json&limit=1&countrycodes=mo';
+      fetch(nomUrl, { headers: { 'Accept-Language': 'zh' } })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data && data.length > 0) {
+            var item = data[0];
+            setUserLocation({ lat: parseFloat(item.lat), lng: parseFloat(item.lon) });
+            setLocationLabel('地標：' + (item.display_name.split(',')[0] || searchText));
+            setSelectedRegion('全部');
+            setRadius(1000);
+          }
+        })
+        .catch(function() {})
+        .then(function() { setSearchLoading(false); });
+    }, [searchText, parksBase, handleSuggClick]);
 
-            return filtered;
-          }, [baseParksData, radius, sortBy, vehicleType, selectedRegion, userLocation]);
+    /* GPS */
+    var handleFindParking = useCallback(function() {
+      if (!navigator.geolocation) {
+        setGpsError('您的瀏覽器不支援地理位置功能。');
+        return;
+      }
+      setGpsError(null);
+      setSelectedRegion('全部');
+      navigator.geolocation.getCurrentPosition(
+        function(pos) {
+          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setLocationLabel('我的位置');
+          setRadius(1000);
+          setSortBy('distance');
+        },
+        function() { setGpsError('無法獲取您的位置，請允許瀏覽器存取定位權限。'); },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
+    }, []);
 
-          const handleFindParking = () => {
-            if (!navigator.geolocation) {
-              setError("您的瀏覽器不支援地理位置功能，請使用「電腦測試」按鈕。");
-              return;
-            }
-            
-            setLoading(true);
-            setError(null);
-            setSelectedRegion('全部'); // 核心修改：按定位時自動切換回全部
+    var handleMockLocation = useCallback(function() {
+      setSelectedRegion('全部');
+      setUserLocation({ lat: 22.194500, lng: 113.538500 });
+      setLocationLabel('模擬：新馬路');
+      setRadius(1000);
+      setSortBy('distance');
+    }, []);
 
-            navigator.geolocation.getCurrentPosition(
-              (position) => {
-                setUserLocation({ lat: position.coords.latitude, lng: position.coords.longitude });
-                setLoading(false);
-              },
-              (err) => {
-                setError("無法獲取您的位置。若在電腦上測試，請點擊下方的「模擬測試」按鈕。");
-                setLoading(false);
-              },
-              { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-            );
-          };
+    /* displayed list */
+    var mergedParks = useMemo(function() {
+      return mergeParks(parksBase, realtimeArr);
+    }, [parksBase, realtimeArr]);
 
-          const handleMockLocation = () => {
-            // 模擬位於新馬路附近的坐標
-            setSelectedRegion('全部'); // 核心修改：測試時亦自動切換回全部
-            setUserLocation({ lat: 22.194500, lng: 113.538500 });
-          };
+    var displayedParks = useMemo(function() {
+      var fi = feeInfo();
+      var list = mergedParks.map(function(p) {
+        var dist = userLocation
+          ? Math.round(calcDistance(userLocation.lat, userLocation.lng, p.lat, p.lng))
+          : null;
+        return Object.assign({}, p, { distance: dist, currentFee: fi.fee, feeLabel: fi.label });
+      });
 
-          const SpaceBadge = ({ iconClass, count, type, colorClass }) => (
-            <div className={`flex items-center space-x-1 px-2 py-1 rounded-md border ${count > 0 ? colorClass : 'bg-gray-100 text-gray-400 border-gray-200'}`}>
-              <i className={`${iconClass} text-[14px]`}></i>
-              <span className="text-xs font-medium">{type}</span>
-              <span className={`text-sm font-bold ml-1 ${count > 0 ? '' : 'text-gray-400'}`}>{count}</span>
-            </div>
-          );
+      if (selectedRegion !== '全部') {
+        list = list.filter(function(p) { return p.region === selectedRegion; });
+      }
+      if (userLocation && radius !== Infinity) {
+        list = list.filter(function(p) { return p.distance !== null && p.distance <= radius; });
+      }
 
-          const radiusOptions = [
-            { val: 500, label: '500 米' },
-            { val: 1000, label: '1000 米' },
-            { val: 2000, label: '2000 米' },
-            { val: 3000, label: '3000 米' },
-            { val: Infinity, label: '無限制' }
-          ];
+      list.sort(function(a, b) {
+        var aOff = !a.hasRealtime, bOff = !b.hasRealtime;
+        if (aOff && !bOff) return 1;
+        if (!aOff && bOff) return -1;
 
-          // 已更新區域列表與資料庫一致
-          const regionsList = [
-            '全部', 
-            '北區 / 黑沙環', 
-            '筷子基 / 青洲 / 西北區', 
-            '中區 / 荷蘭園 / 雀仔園', 
-            '新口岸 / 皇朝', 
-            '下環 / 內港 / 新馬路', 
-            '氹仔區', 
-            '路氹 / 澳大', 
-            '路環區', 
-            '港珠澳大橋'
-          ];
+        var aS = getVehicleSpaces(a, vehicleType);
+        var bS = getVehicleSpaces(b, vehicleType);
+        var aFull = aS === 0, bFull = bS === 0;
+        if (aFull && !bFull) return 1;
+        if (!aFull && bFull) return -1;
 
-          return (
-            <div className="min-h-screen bg-gray-50 flex justify-center font-sans">
-              <div className="w-full max-w-md bg-white shadow-xl overflow-hidden flex flex-col relative">
-                
-                {/* Header */}
-                <div className="bg-emerald-600 text-white p-5 shadow-md z-10">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center space-x-2">
-                      <i className="fa-solid fa-location-dot text-2xl"></i>
-                      <h1 className="text-xl font-bold">澳門找車位</h1>
-                    </div>
-                    {baseParksData.length > 0 && (
-                      <div className="flex flex-col items-end">
-                        <span className={`text-[10px] px-2 py-1 rounded-full font-bold ${error && error.includes('數據') ? 'bg-red-100 text-red-800' : 'bg-green-100 text-green-800'}`}>
-                          {error && error.includes('數據') ? '未能連接數據' : '已接通政府API'}
-                        </span>
-                        {lastUpdated && !(error && error.includes('數據')) && (
-                          <span className="text-[9px] text-emerald-100 mt-1">
-                            最後更新: {lastUpdated.toLocaleString('zh-MO', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <p className="text-emerald-100 text-sm">已收錄全澳 {MACAU_CARPARKS_DB.length} 個公共停車場</p>
-                </div>
+        if (sortBy === 'distance' && a.distance !== null && b.distance !== null) {
+          return a.distance - b.distance;
+        }
+        if (sortBy === 'spaces') return bS - aS;
+        if (sortBy === 'fee') return a.currentFee - b.currentFee;
+        return bS - aS;
+      });
+      return list;
+    }, [mergedParks, userLocation, radius, selectedRegion, vehicleType, sortBy]);
 
-                {/* Control Panel */}
-                <div className="p-5 border-b border-gray-100 bg-white">
-                  <button
-                    onClick={handleFindParking}
-                    disabled={loading}
-                    className="w-full flex flex-col items-center justify-center bg-emerald-500 text-white py-3 px-4 rounded-2xl shadow-lg shadow-emerald-200 hover:bg-emerald-600 active:transform active:scale-95 transition-all disabled:opacity-70 mb-5"
-                  >
-                    <div className="flex items-center space-x-3">
-                      {loading ? (
-                        <i className="fa-solid fa-spinner fa-spin text-3xl"></i>
-                      ) : (
-                        <i className="fa-solid fa-location-crosshairs text-3xl"></i>
-                      )}
-                      <span className="tracking-widest font-bold text-2xl">{loading ? '定位與載入中...' : '搵 車 位'}</span>
-                    </div>
-                    {!loading && <span className="text-xs font-medium opacity-90 mt-1">(以手機定位找附近停車場)</span>}
-                  </button>
+    /* region stats */
+    var regionStats = useMemo(function() {
+      var pool = selectedRegion === '全部' ? mergedParks
+        : mergedParks.filter(function(p) { return p.region === selectedRegion; });
+      var st = { light:{a:0,t:0}, moto:{a:0,t:0}, ev:{a:0,t:0}, heavy:{a:0,t:0} };
+      pool.forEach(function(p) {
+        st.light.t  += p.capacity.light;  st.light.a  += (p.spaces ? p.spaces.light  : 0);
+        st.moto.t   += p.capacity.moto;   st.moto.a   += (p.spaces ? p.spaces.moto   : 0);
+        st.ev.t     += p.capacity.ev;     st.ev.a     += (p.spaces ? p.spaces.ev     : 0);
+        st.heavy.t  += p.capacity.heavy;  st.heavy.a  += (p.spaces ? p.spaces.heavy  : 0);
+      });
+      return { count: pool.length, st: st };
+    }, [mergedParks, selectedRegion]);
 
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">區域車位查詢</label>
-                    <div className="flex flex-wrap gap-2">
-                      {regionsList.map(reg => (
-                        <button
-                          key={reg}
-                          onClick={() => setSelectedRegion(reg)}
-                          className={`py-1.5 px-3 text-xs md:text-sm rounded-full transition-colors border ${
-                            selectedRegion === reg 
-                              ? 'bg-emerald-600 text-white border-emerald-600 font-medium shadow-sm' 
-                              : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          {reg}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+    function getVehicleSpaces(park, type) {
+      if (!park.spaces) return 0;
+      if (type === 'light') return park.spaces.light;
+      if (type === 'moto')  return park.spaces.moto;
+      if (type === 'ev')    return park.spaces.ev;
+      return park.spaces.light + park.spaces.moto + park.spaces.ev + park.spaces.heavy;
+    }
 
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">駕駛車輛 (即時更新數量配對)</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'light', label: '輕型車', iconClass: 'fa-solid fa-car' },
-                        { id: 'ev', label: '電動車', iconClass: 'fa-solid fa-bolt' },
-                        { id: 'moto', label: '電單車', iconClass: 'fa-solid fa-motorcycle' }
-                      ].map(v => (
-                        <button
-                          key={v.id}
-                          onClick={() => setVehicleType(v.id)}
-                          className={`py-2 px-1 text-sm rounded-lg transition-colors flex flex-col items-center justify-center space-y-1 border ${
-                            vehicleType === v.id 
-                              ? 'bg-blue-50 border-blue-500 text-blue-700 font-bold shadow-sm' 
-                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                          }`}
-                        >
-                          <i className={`${v.iconClass} text-lg`}></i>
-                          <span>{v.label}</span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+    function openMap(type, lat, lng, name) {
+      var url = '';
+      if (type === 'google') url = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng;
+      else if (type === 'apple') url = 'http://maps.apple.com/?daddr=' + lat + ',' + lng;
+      else if (type === 'amap') url = 'https://uri.amap.com/navigation?to=' + lng + ',' + lat + ',' + encodeURIComponent(name) + '&mode=car';
+      window.open(url, '_blank');
+    }
 
-                  {userLocation && (
-                    <div className="mb-4">
-                      <label className="block text-sm font-medium text-gray-700 mb-2">搜尋範圍 (即時更新)</label>
-                      <div className="grid grid-cols-5 gap-1.5">
-                        {radiusOptions.map(r => (
-                          <button
-                            key={r.val}
-                            onClick={() => setRadius(r.val)}
-                            className={`py-2 text-[11px] rounded-lg transition-colors ${
-                              radius === r.val 
-                                ? 'bg-gray-800 text-white font-medium shadow-sm' 
-                                : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                            }`}
-                          >
-                            {r.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+    function connBadge() {
+      if (connStatus === 'ok') return { cls:'bg-green-100 text-green-800', text:'官方數據已接通' };
+      if (connStatus === 'delayed') return { cls:'bg-orange-100 text-orange-800', text:'數據連接延遲' };
+      if (connStatus === 'error') return { cls:'bg-red-100 text-red-800', text:'未能讀取數據' };
+      return { cls:'bg-gray-100 text-gray-600', text:'連接中…' };
+    }
 
-                  <div className="mb-2">
-                    <label className="block text-sm font-medium text-gray-700 mb-2">排序方式</label>
-                    <div className="grid grid-cols-3 gap-2">
-                      {[
-                        { id: 'distance', label: '距離最近' },
-                        { id: 'spaces', label: '車位最多' },
-                        { id: 'fee', label: '收費最低' }
-                      ].map(sortOpt => (
-                        <button
-                          key={sortOpt.id}
-                          onClick={() => setSortBy(sortOpt.id)}
-                          className={`py-2 text-sm rounded-lg transition-colors border ${
-                            sortBy === sortOpt.id 
-                              ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-bold' 
-                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'
-                          }`}
-                        >
-                          {sortOpt.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
+    function spaceColor(count, type) {
+      if (count === null || count === undefined) return 'text-gray-400';
+      if (count === 0) return 'text-red-600 font-bold pulse-red';
+      if (count <= 10) return 'text-orange-500 font-bold';
+      return 'text-emerald-600 font-bold';
+    }
 
-                  {error && (
-                    <div className="mt-4 p-3 bg-red-50 text-red-600 rounded-lg flex items-start space-x-2 text-sm">
-                      <i className="fa-solid fa-circle-exclamation mt-0.5"></i>
-                      <span>{error}</span>
-                    </div>
-                  )}
-                </div>
+    var badge = connBadge();
+    var fmtTs = function(ts) {
+      if (!ts) return '';
+      try {
+        var d = new Date(ts);
+        return d.toLocaleDateString('zh-MO') + ' ' + d.toLocaleTimeString('zh-MO', {hour:'2-digit',minute:'2-digit'});
+      } catch(e) { return ts; }
+    };
 
-                {/* 區域車位統計 */}
-                {regionStats && (
-                  <div className="bg-emerald-50 px-4 py-3 border-b border-emerald-100">
-                    <div className="text-sm font-bold text-emerald-800 mb-2 flex justify-between items-center">
-                      <span>{selectedRegion}停車場 ({regionStats.count}個)</span>
-                      <span className="text-xs font-normal text-emerald-600">空置 / 總數</span>
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      <div className={`bg-white rounded p-1.5 text-center shadow-sm border ${vehicleType === 'light' ? 'border-blue-400 ring-1 ring-blue-400' : 'border-emerald-100/50'}`}>
-                        <i className="fa-solid fa-car text-blue-500 mb-1 text-sm"></i>
-                        <div className="text-[10px] text-gray-500">輕型</div>
-                        <div className="text-xs font-bold text-gray-800">{regionStats.stats.light.available}<span className="text-[10px] text-gray-400 font-normal">/{regionStats.stats.light.total}</span></div>
-                      </div>
-                      <div className={`bg-white rounded p-1.5 text-center shadow-sm border ${vehicleType === 'ev' ? 'border-green-400 ring-1 ring-green-400' : 'border-emerald-100/50'}`}>
-                        <i className="fa-solid fa-bolt text-green-500 mb-1 text-sm"></i>
-                        <div className="text-[10px] text-gray-500">電動</div>
-                        <div className="text-xs font-bold text-gray-800">{regionStats.stats.ev.available}<span className="text-[10px] text-gray-400 font-normal">/{regionStats.stats.ev.total}</span></div>
-                      </div>
-                      <div className={`bg-white rounded p-1.5 text-center shadow-sm border ${vehicleType === 'moto' ? 'border-orange-400 ring-1 ring-orange-400' : 'border-emerald-100/50'}`}>
-                        <i className="fa-solid fa-motorcycle text-orange-500 mb-1 text-sm"></i>
-                        <div className="text-[10px] text-gray-500">電單車</div>
-                        <div className="text-xs font-bold text-gray-800">{regionStats.stats.moto.available}<span className="text-[10px] text-gray-400 font-normal">/{regionStats.stats.moto.total}</span></div>
-                      </div>
-                      <div className="bg-white rounded p-1.5 text-center shadow-sm border border-emerald-100/50">
-                        <i className="fa-solid fa-truck text-slate-500 mb-1 text-sm"></i>
-                        <div className="text-[10px] text-gray-500">重型</div>
-                        <div className="text-xs font-bold text-gray-800">{regionStats.stats.heavy.available}<span className="text-[10px] text-gray-400 font-normal">/{regionStats.stats.heavy.total}</span></div>
-                      </div>
-                    </div>
-                  </div>
-                )}
+    /* ──────────────── RENDER ──────────────── */
+    return (
+      <div className="min-h-screen bg-gray-100 flex justify-center">
+        <div className="w-full max-w-md bg-white shadow-2xl flex flex-col relative" style={{minHeight:'100vh'}}>
 
-                {/* Results List */}
-                <div className="flex-1 overflow-y-auto bg-gray-50 p-4 pb-20">
-                  {displayedParks.length > 0 && (
-                    <div className="text-sm text-gray-500 mb-3 flex justify-between items-center">
-                      <span>{userLocation && radius !== Infinity ? `找到 ${displayedParks.length} 個停車場` : `列出 ${displayedParks.length} 個停車場`}</span>
-                      <span>{userLocation ? (radius === Infinity ? '無距離限制' : `半徑 ${radius} 米內`) : '依區域查詢'}</span>
-                    </div>
-                  )}
-
-                  <div className="space-y-4">
-                    {displayedParks.map((park) => {
-                      const relevantSpaces = getRelevantSpaces(park, vehicleType);
-                      const isFull = relevantSpaces === 0;
-
-                      return (
-                        <div key={park.id} className={`bg-white p-4 rounded-xl shadow-sm border ${isFull ? 'border-red-200 opacity-80' : 'border-gray-100'}`}>
-                          <div className="flex justify-between items-start mb-3">
-                            <h3 className="font-bold text-gray-800 text-lg leading-tight w-3/4">
-                              {park.name}
-                              {isFull && <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full font-bold">已滿</span>}
-                            </h3>
-                            {park.distance !== null && (
-                              <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap">
-                                距 {park.distance}m
-                              </div>
-                            )}
-                          </div>
-
-                          <div className="bg-gray-50 p-3 rounded-lg mb-3 text-sm text-gray-600">
-                            <div className="flex items-center space-x-2 mb-2 border-b border-gray-200 pb-2">
-                              <i className="fa-solid fa-dollar-sign text-emerald-600 text-lg"></i>
-                              <span className="flex-1">現時收費：</span>
-                              <strong className="text-emerald-700 text-lg">${park.currentFee}</strong> 
-                              <span>/小時 <span className="text-xs text-gray-400">({park.feeLabel})</span></span>
-                            </div>
-                             <div className="flex flex-col space-y-1 mb-2 border-b border-gray-200 pb-2 text-xs">
-                                <div className="flex justify-between">
-                                    <span className="text-gray-500">日間收費 (08:00-20:00)</span>
-                                    <span className="font-medium">${park.fees.day}/小時</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-500">夜間收費 (20:00-08:00)</span>
-                                    <span className="font-medium">${park.fees.night}/小時</span>
-                                </div>
-                            </div>
-
-                            <div className="flex items-start space-x-2 mb-1.5 mt-2">
-                              <i className="fa-solid fa-map text-blue-500 mt-0.5"></i>
-                              <span className="leading-tight">地址：{park.address}</span>
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <i className="fa-solid fa-phone text-orange-500"></i>
-                              <span>聯絡電話：{park.phone}</span>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 gap-2 mt-2">
-                            <SpaceBadge 
-                              iconClass="fa-solid fa-car" count={park.spaces.light} type="輕型" 
-                              colorClass={vehicleType === 'light' ? (park.spaces.light > 10 ? 'bg-blue-100 text-blue-800 border-blue-300 ring-1 ring-blue-300' : park.spaces.light > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.light > 10 ? 'bg-blue-50 text-blue-700 border-blue-200' : park.spaces.light > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
-                            />
-                            <SpaceBadge 
-                              iconClass="fa-solid fa-bolt" count={park.spaces.ev} type="電動" 
-                              colorClass={vehicleType === 'ev' ? (park.spaces.ev > 0 ? 'bg-green-100 text-green-800 border-green-300 ring-1 ring-green-300' : '') : (park.spaces.ev > 0 ? 'bg-green-50 text-green-700 border-green-200' : '')} 
-                            />
-                            <SpaceBadge 
-                              iconClass="fa-solid fa-motorcycle" count={park.spaces.moto} type="電單車" 
-                              colorClass={vehicleType === 'moto' ? (park.spaces.moto > 10 ? 'bg-purple-100 text-purple-800 border-purple-300 ring-1 ring-purple-300' : park.spaces.moto > 0 ? 'bg-orange-100 text-orange-800 border-orange-300 ring-1 ring-orange-300' : '') : (park.spaces.moto > 10 ? 'bg-purple-50 text-purple-700 border-purple-200' : park.spaces.moto > 0 ? 'bg-orange-50 text-orange-700 border-orange-200' : '')} 
-                            />
-                            <SpaceBadge 
-                              iconClass="fa-solid fa-truck" count={park.spaces.heavy} type="重型" 
-                              colorClass={park.spaces.heavy > 0 ? 'bg-slate-50 text-slate-700 border-slate-200' : ''} 
-                            />
-                          </div>
-
-                          <div className="mt-4 pt-3 border-t border-gray-50 flex flex-col">
-                            <button
-                              onClick={() => setActiveNavId(activeNavId === park.id ? null : park.id)}
-                              className="flex items-center justify-center space-x-1 text-emerald-600 bg-emerald-50 py-2 rounded-lg font-medium hover:bg-emerald-100 transition-colors"
-                            >
-                              <i className="fa-solid fa-location-arrow"></i>
-                              <span>去停車場</span>
-                              <i className={`fa-solid fa-chevron-${activeNavId === park.id ? 'up' : 'down'}`}></i>
-                            </button>
-
-                            {activeNavId === park.id && (
-                              <div className="flex space-x-2 mt-2">
-                                <button onClick={() => openMap('google', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-blue-50 text-blue-700 rounded-md hover:bg-blue-100 flex flex-col items-center justify-center space-y-1 transition-colors">
-                                  <span className="font-semibold text-sm">Google</span>
-                                  <span>Maps</span>
-                                </button>
-                                <button onClick={() => openMap('apple', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-gray-100 text-gray-800 rounded-md hover:bg-gray-200 flex flex-col items-center justify-center space-y-1 transition-colors">
-                                  <span className="font-semibold text-sm">Apple</span>
-                                  <span>Maps</span>
-                                </button>
-                                <button onClick={() => openMap('amap', park.lat, park.lng, park.name)} className="flex-1 text-xs py-2 bg-sky-50 text-sky-700 rounded-md hover:bg-sky-100 flex flex-col items-center justify-center space-y-1 transition-colors">
-                                  <span className="font-semibold text-sm">高德</span>
-                                  <span>地圖</span>
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-
-                    {!loading && displayedParks.length === 0 && !error && (
-                      <div className="text-center text-gray-400 py-10">
-                        <p>無符合條件的停車場</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleMockLocation}
-                  disabled={loading}
-                  className="fixed bottom-6 right-6 flex items-center justify-center space-x-2 bg-slate-800 text-white p-3 md:px-5 md:py-3 rounded-full shadow-2xl hover:bg-slate-700 active:transform active:scale-95 transition-all z-50 border border-slate-600 disabled:opacity-70"
-                  title="模擬身處新馬路 (測試用)"
-                >
-                  <i className="fa-solid fa-desktop"></i>
-                  <span className="text-sm font-medium hidden md:block">模擬新馬路測試</span>
+          {/* ── Header ── */}
+          <div className="bg-emerald-600 text-white px-5 pt-5 pb-4 shadow-lg z-20">
+            <div className="flex items-center justify-between mb-1">
+              <div className="flex items-center space-x-2">
+                <i className="fa-solid fa-square-parking text-2xl"></i>
+                <h1 className="text-xl font-bold tracking-wide">澳門找車位</h1>
+                <span className="text-[11px] bg-emerald-700 px-2 py-0.5 rounded-full opacity-80">小助手</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <span className={'text-[10px] px-2 py-1 rounded-full font-semibold ' + badge.cls}>
+                  {connStatus === 'ok' || connStatus === 'delayed'
+                    ? <span><i className="fa-solid fa-circle-dot mr-1 text-[8px]"></i>{badge.text}</span>
+                    : badge.text}
+                </span>
+                <button onClick={function(){ setShowSettings(!showSettings); }}
+                  className="w-8 h-8 rounded-full bg-emerald-700 hover:bg-emerald-800 flex items-center justify-center transition-colors">
+                  <i className="fa-solid fa-gear text-sm"></i>
                 </button>
-
               </div>
             </div>
-          );
-        }
+            <div className="flex items-center justify-between">
+              <p className="text-emerald-200 text-xs">全澳 {parksBase.length} 個公共停車場</p>
+              {lastRtTs && (
+                <p className="text-emerald-300 text-[10px]">
+                  更新：{lastRtTs.toLocaleTimeString('zh-MO', {hour:'2-digit',minute:'2-digit',second:'2-digit'})}
+                  {rtLoading && <i className="fa-solid fa-rotate ml-1 spin"></i>}
+                </p>
+              )}
+            </div>
+          </div>
 
-        const root = ReactDOM.createRoot(document.getElementById('root'));
-        root.render(<App />);
-    </script>
+          {/* ── Settings Panel ── */}
+          {showSettings && (
+            <div className="bg-slate-800 text-white px-5 py-4 border-b border-slate-700 z-10">
+              <h2 className="font-bold text-sm mb-3 flex items-center space-x-2">
+                <i className="fa-solid fa-sliders"></i>
+                <span>系統設定</span>
+              </h2>
+
+              {syncReminder && (
+                <div className="mb-3 p-2 bg-yellow-600 rounded text-xs flex items-start space-x-2">
+                  <i className="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                  <span>停車場基礎資料已超過半年未更新，建議重新同步。</span>
+                </div>
+              )}
+
+              <div className="bg-slate-700 rounded-lg p-3 mb-3">
+                <div className="text-xs font-semibold text-slate-300 mb-2">停車場基礎資料同步</div>
+                <div className="text-[10px] text-slate-400 mb-2">
+                  從交通局 API 更新停車場名稱、位置、地址及總容量。<br/>
+                  一般半年更新一次即可。
+                </div>
+                {lastBaseSync && (
+                  <div className="text-[10px] text-slate-400 mb-2">
+                    上次同步：{fmtTs(lastBaseSync)}
+                  </div>
+                )}
+                <button
+                  onClick={syncBaseData}
+                  disabled={baseSyncLoading}
+                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors disabled:opacity-60 flex items-center justify-center space-x-2"
+                >
+                  {baseSyncLoading
+                    ? <span><i className="fa-solid fa-rotate spin mr-2"></i>同步中…</span>
+                    : <span><i className="fa-solid fa-cloud-arrow-down mr-2"></i>立即同步基礎資料</span>}
+                </button>
+                {baseSyncMsg && (
+                  <div className={'mt-2 text-xs px-2 py-1 rounded ' +
+                    (baseSyncMsg.indexOf('成功') !== -1 ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200')}>
+                    {baseSyncMsg}
+                  </div>
+                )}
+              </div>
+
+              <div className="bg-slate-700 rounded-lg p-3">
+                <div className="text-xs font-semibold text-slate-300 mb-1">恢復出廠設定</div>
+                <div className="text-[10px] text-slate-400 mb-2">清除所有同步資料，恢復程式內建 {BUILTIN_DB.length} 個停車場記錄。</div>
+                <button
+                  onClick={factoryReset}
+                  className="w-full py-2 bg-red-700 hover:bg-red-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2"
+                >
+                  <i className="fa-solid fa-rotate-left mr-2"></i>恢復出廠設定
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Control Panel ── */}
+          <div className="px-4 pt-4 pb-3 border-b border-gray-100 bg-white">
+
+            {/* Search box */}
+            <div className="relative mb-4">
+              <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden shadow-sm focus-within:ring-2 focus-within:ring-emerald-400 focus-within:border-emerald-400">
+                <i className="fa-solid fa-magnifying-glass text-gray-400 ml-3"></i>
+                <input
+                  type="text"
+                  value={searchText}
+                  onChange={function(e){ handleSearchInput(e.target.value); }}
+                  onKeyDown={function(e){ if(e.key==='Enter') handleSearchSubmit(); }}
+                  onFocus={function(){ if(suggestions.length>0) setShowSugg(true); }}
+                  placeholder="搜尋停車場或地標…"
+                  className="flex-1 py-2.5 px-3 text-sm outline-none bg-transparent"
+                />
+                {searchLoading
+                  ? <i className="fa-solid fa-rotate spin text-emerald-500 mr-3"></i>
+                  : searchText
+                    ? <button onClick={function(){setSearchText('');setSuggestions([]);setShowSugg(false);}}
+                        className="mr-3 text-gray-400 hover:text-gray-600">
+                        <i className="fa-solid fa-xmark"></i>
+                      </button>
+                    : null}
+                <button onClick={handleSearchSubmit}
+                  className="bg-emerald-600 text-white px-3 py-2.5 text-sm hover:bg-emerald-700 transition-colors">
+                  搜尋
+                </button>
+              </div>
+              {showSugg && suggestions.length > 0 && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
+                  {suggestions.map(function(s) {
+                    return (
+                      <button key={s.id} onClick={function(){ handleSuggClick(s); }}
+                        className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 text-sm border-b border-gray-100 last:border-0 flex items-center space-x-2">
+                        <i className="fa-solid fa-square-parking text-emerald-500 text-xs"></i>
+                        <span className="flex-1">{s.name}</span>
+                        <span className="text-[10px] text-gray-400">{s.region}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* GPS button */}
+            <button onClick={handleFindParking}
+              className="w-full flex items-center justify-center space-x-3 bg-emerald-500 text-white py-3 px-4 rounded-2xl shadow-md shadow-emerald-200 hover:bg-emerald-600 active:scale-95 transition-all mb-4">
+              <i className="fa-solid fa-location-crosshairs text-2xl"></i>
+              <div className="text-left">
+                <div className="font-bold text-lg tracking-wider">搵 車 位</div>
+                <div className="text-[11px] opacity-80">以手機定位找附近停車場</div>
+              </div>
+              {userLocation && (
+                <div className="ml-auto bg-emerald-600 rounded-lg px-2 py-1 text-xs">
+                  <i className="fa-solid fa-location-dot mr-1"></i>{locationLabel || '已定位'}
+                </div>
+              )}
+            </button>
+
+            {/* GPS error */}
+            {gpsError && (
+              <div className="mb-3 p-2.5 bg-red-50 text-red-600 rounded-lg text-sm flex items-start space-x-2">
+                <i className="fa-solid fa-triangle-exclamation mt-0.5 shrink-0"></i>
+                <span>{gpsError}</span>
+              </div>
+            )}
+
+            {/* Region filter */}
+            <div className="mb-3">
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">區域查詢</label>
+              <div className="flex flex-wrap gap-1.5">
+                {REGIONS.map(function(reg) {
+                  return (
+                    <button key={reg} onClick={function(){ setSelectedRegion(reg); }}
+                      className={'py-1 px-2.5 text-xs rounded-full border transition-colors ' +
+                        (selectedRegion === reg
+                          ? 'bg-emerald-600 text-white border-emerald-600 font-semibold shadow-sm'
+                          : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50')}>
+                      {reg}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Vehicle type */}
+            <div className="mb-3">
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">車輛類型</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id:'light', label:'輕型車',  icon:'fa-car' },
+                  { id:'ev',    label:'電動車',  icon:'fa-bolt' },
+                  { id:'moto',  label:'電單車',  icon:'fa-motorcycle' }
+                ].map(function(v) {
+                  return (
+                    <button key={v.id} onClick={function(){ setVehicleType(v.id); }}
+                      className={'py-2 text-sm rounded-xl border transition-colors flex flex-col items-center space-y-1 ' +
+                        (vehicleType === v.id
+                          ? 'bg-blue-50 border-blue-400 text-blue-700 font-bold shadow-sm'
+                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50')}>
+                      <i className={'fa-solid ' + v.icon + ' text-base'}></i>
+                      <span className="text-xs">{v.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Radius (only when location set) */}
+            {userLocation && (
+              <div className="mb-3">
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">搜尋範圍</label>
+                <div className="grid grid-cols-5 gap-1">
+                  {[{v:500,l:'500m'},{v:1000,l:'1km'},{v:2000,l:'2km'},{v:3000,l:'3km'},{v:Infinity,l:'全部'}].map(function(r) {
+                    return (
+                      <button key={r.v} onClick={function(){ setRadius(r.v); }}
+                        className={'py-1.5 text-[11px] rounded-lg transition-colors ' +
+                          (radius === r.v ? 'bg-gray-800 text-white font-medium' : 'bg-gray-100 text-gray-600 hover:bg-gray-200')}>
+                        {r.l}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Sort */}
+            <div>
+              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">排序方式</label>
+              <div className="grid grid-cols-3 gap-2">
+                {[{id:'distance',l:'距離最近'},{id:'spaces',l:'車位最多'},{id:'fee',l:'收費最低'}].map(function(s) {
+                  return (
+                    <button key={s.id} onClick={function(){ setSortBy(s.id); }}
+                      className={'py-2 text-xs rounded-xl border transition-colors ' +
+                        (sortBy === s.id
+                          ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-bold'
+                          : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50')}>
+                      {s.l}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Region Stats Bar ── */}
+          <div className="bg-emerald-50 px-4 py-2.5 border-b border-emerald-100">
+            <div className="flex justify-between items-center mb-1.5">
+              <span className="text-xs font-bold text-emerald-800">{selectedRegion} ({regionStats.count}個停車場)</span>
+              <span className="text-[10px] text-emerald-600">空置 / 總數</span>
+            </div>
+            <div className="grid grid-cols-4 gap-1.5">
+              {[
+                {key:'light', icon:'fa-car',        color:'text-blue-500',   label:'輕型', sel:'light'},
+                {key:'ev',    icon:'fa-bolt',        color:'text-green-500',  label:'電動', sel:'ev'},
+                {key:'moto',  icon:'fa-motorcycle',  color:'text-orange-500', label:'電單車', sel:'moto'},
+                {key:'heavy', icon:'fa-truck',       color:'text-slate-500',  label:'重型', sel:'all'}
+              ].map(function(item) {
+                var st = regionStats.st[item.key];
+                var active = vehicleType === item.sel;
+                return (
+                  <div key={item.key}
+                    className={'bg-white rounded-lg p-1.5 text-center shadow-sm border ' +
+                      (active ? 'border-blue-400 ring-1 ring-blue-300' : 'border-emerald-100')}>
+                    <i className={'fa-solid ' + item.icon + ' ' + item.color + ' text-xs mb-0.5'}></i>
+                    <div className="text-[9px] text-gray-400">{item.label}</div>
+                    <div className="text-xs font-bold text-gray-800">
+                      <span className={spaceColor(st.a, item.sel)}>{st.a}</span>
+                      <span className="text-[9px] text-gray-400 font-normal">/{st.t}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* ── Park List ── */}
+          <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
+            <div className="px-4 py-2 flex justify-between items-center">
+              <span className="text-xs text-gray-500">
+                {userLocation && radius !== Infinity
+                  ? '找到 ' + displayedParks.length + ' 個停車場'
+                  : '列出 ' + displayedParks.length + ' 個停車場'}
+              </span>
+              {realtimeArr.length > 0 && (
+                <span className="text-[10px] text-gray-400">
+                  <i className="fa-solid fa-satellite-dish mr-1"></i>
+                  即時數據：{realtimeArr.length}個
+                </span>
+              )}
+            </div>
+
+            <div className="px-4 space-y-3 pb-4">
+              {displayedParks.map(function(park) {
+                var vs = getVehicleSpaces(park, vehicleType);
+                var isFull = vs === 0;
+                var noData = !park.spaces;
+                var navOpen = activeNavId === park.id;
+                var fi2 = feeInfo();
+
+                return (
+                  <div key={park.id}
+                    className={'bg-white rounded-2xl shadow-sm border overflow-hidden ' +
+                      (isFull && !noData ? 'border-red-200' : 'border-gray-100')}>
+
+                    {/* Card header */}
+                    <div className={'px-4 pt-3 pb-2 flex items-start justify-between ' +
+                      (isFull && !noData ? 'bg-red-50' : '')}>
+                      <div className="flex-1 pr-2">
+                        <h3 className="font-bold text-gray-800 text-base leading-snug">
+                          {park.name}
+                          {isFull && !noData && (
+                            <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full pulse-red">已滿</span>
+                          )}
+                          {noData && (
+                            <span className="ml-2 align-middle text-[10px] bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">離線</span>
+                          )}
+                        </h3>
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          <i className="fa-solid fa-map-pin mr-1 text-emerald-500"></i>{park.region}
+                        </div>
+                      </div>
+                      {park.distance !== null && (
+                        <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
+                          {park.distance < 1000
+                            ? park.distance + 'm'
+                            : (park.distance / 1000).toFixed(1) + 'km'}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Spaces */}
+                    <div className="px-4 pb-2">
+                      {noData ? (
+                        <div className="text-xs text-gray-400 py-1">
+                          <i className="fa-solid fa-circle-exclamation mr-1"></i>未能讀取即時車位數據
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { key:'light', icon:'fa-car',       label:'輕型', val: park.spaces.light,  sel:'light', ring:'ring-blue-300' },
+                            { key:'ev',    icon:'fa-bolt',      label:'電動', val: park.spaces.ev,    sel:'ev',    ring:'ring-green-300' },
+                            { key:'moto',  icon:'fa-motorcycle',label:'電單車',val: park.spaces.moto,  sel:'moto',  ring:'ring-orange-300' },
+                            { key:'heavy', icon:'fa-truck',     label:'重型', val: park.spaces.heavy, sel:'all',   ring:'ring-slate-300' }
+                          ].map(function(item) {
+                            var active = vehicleType === item.sel;
+                            return (
+                              <div key={item.key}
+                                className={'rounded-lg p-1.5 text-center border ' +
+                                  (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
+                                <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
+                                <div className="text-[9px] text-gray-400">{item.label}</div>
+                                <div className={'text-sm ' + spaceColor(item.val, item.sel)}>
+                                  {item.val}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Info */}
+                    <div className="mx-4 mb-2 bg-gray-50 rounded-xl p-2.5 text-xs text-gray-600 space-y-1">
+                      <div className="flex items-center justify-between">
+                        <span className="flex items-center space-x-1">
+                          <i className="fa-solid fa-dollar-sign text-emerald-600"></i>
+                          <span>現時收費</span>
+                          <span className="text-[10px] text-gray-400">({fi2.label})</span>
+                        </span>
+                        <span className="font-bold text-emerald-700 text-base">${fi2.fee}<span className="text-[10px] font-normal text-gray-500">/小時</span></span>
+                      </div>
+                      <div className="flex items-center space-x-1 text-[11px]">
+                        <i className="fa-solid fa-location-dot text-blue-400"></i>
+                        <span className="text-gray-500">{park.address}</span>
+                      </div>
+                      {park.phone && (
+                        <div className="flex items-center space-x-1 text-[11px]">
+                          <i className="fa-solid fa-phone text-orange-400"></i>
+                          <span className="text-gray-500">{park.phone}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Navigation */}
+                    <div className="px-4 pb-3">
+                      <button onClick={function(){ setActiveNavId(navOpen ? null : park.id); }}
+                        className="w-full flex items-center justify-center space-x-2 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium hover:bg-emerald-100 transition-colors">
+                        <i className="fa-solid fa-diamond-turn-right"></i>
+                        <span>前往停車場</span>
+                        <i className={'fa-solid fa-chevron-' + (navOpen ? 'up' : 'down') + ' text-xs'}></i>
+                      </button>
+                      {navOpen && (
+                        <div className="flex space-x-2 mt-2">
+                          <button onClick={function(){ openMap('google', park.lat, park.lng, park.name); }}
+                            className="flex-1 py-2.5 bg-blue-50 text-blue-700 rounded-xl text-xs font-semibold hover:bg-blue-100 transition-colors flex flex-col items-center">
+                            <i className="fa-brands fa-google mb-0.5"></i>Google Maps
+                          </button>
+                          <button onClick={function(){ openMap('apple', park.lat, park.lng, park.name); }}
+                            className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-200 transition-colors flex flex-col items-center">
+                            <i className="fa-brands fa-apple mb-0.5"></i>Apple Maps
+                          </button>
+                          <button onClick={function(){ openMap('amap', park.lat, park.lng, park.name); }}
+                            className="flex-1 py-2.5 bg-sky-50 text-sky-700 rounded-xl text-xs font-semibold hover:bg-sky-100 transition-colors flex flex-col items-center">
+                            <i className="fa-solid fa-map mb-0.5"></i>高德地圖
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {displayedParks.length === 0 && !rtLoading && (
+                <div className="text-center text-gray-400 py-16">
+                  <i className="fa-solid fa-square-parking text-4xl mb-3 block text-gray-200"></i>
+                  <p className="text-sm">無符合條件的停車場</p>
+                  <p className="text-xs mt-1">請嘗試調整搜尋範圍或區域篩選</p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Mock location FAB ── */}
+          <button onClick={handleMockLocation}
+            className="fixed bottom-6 right-6 bg-slate-800 text-white p-3 rounded-full shadow-2xl hover:bg-slate-700 active:scale-95 transition-all z-50 border border-slate-600"
+            title="模擬身處新馬路 (測試用)">
+            <i className="fa-solid fa-desktop"></i>
+          </button>
+
+        </div>
+      </div>
+    );
+  }
+
+  ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
 </body>
 </html>
