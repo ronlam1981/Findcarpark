@@ -161,16 +161,20 @@
   function parseMaintenanceXml(text) {
     var parser = new DOMParser();
     var doc = parser.parseFromString(text, 'text/xml');
+    /* Support both new API (carparkInfo) and old API (Car_park_info) tag names */
     var items = doc.getElementsByTagName('carparkInfo');
     if (!items.length) items = doc.getElementsByTagName('CarParkInfo');
     if (!items.length) items = doc.getElementsByTagName('Car_park_info');
+    if (!items.length) items = doc.getElementsByTagName('car_park_info');
     var result = [];
     for (var i = 0; i < items.length; i++) {
       var el = items[i];
-      var no   = getVal(el, ['CAR_PARK_NO','car_park_no','NO','id']);
-      var name = getVal(el, ['CNAME','cname','Title','name','ENAME']);
-      var lc   = toInt(getVal(el, ['CAR_CNT','car_cnt','light_car','LIGHT_CNT','CAR']));
-      var mo   = toInt(getVal(el, ['MO_CNT','mo_cnt','MB_CNT','motorcycle','MOTO_CNT','MOTO']));
+      var no   = getVal(el, ['CAR_PARK_NO','car_park_no','ID','id','NO']);
+      /* Old API uses <Title>, new API uses <CNAME> */
+      var name = getVal(el, ['CNAME','cname','Title','title','NAME','name','ENAME']);
+      /* Old API: light_car / motorcycle; new API: CAR_CNT / MO_CNT */
+      var lc   = toInt(getVal(el, ['CAR_CNT','car_cnt','light_car','LIGHT_CAR','CAR']));
+      var mo   = toInt(getVal(el, ['MO_CNT','mo_cnt','MB_CNT','motorcycle','MOTORCYCLE','MOTO']));
       var ev   = toInt(getVal(el, ['EV_CNT','ev_cnt','EV']));
       var hv   = toInt(getVal(el, ['HEAVY_CNT','heavy_cnt','HEAVY']));
       if (name || no) {
@@ -207,97 +211,128 @@
     return result;
   }
 
-  /* ─── CORS-Proxy Fetch ─── */
+  /* ─── OLD API (allorigins + token-in-URL, confirmed browser-compatible) ─── */
+  var OLD_MAINT_URL = 'https://api.data.gov.mo/document/download/ea50a770-cc35-47cc-a3ba-7f60092d4bc4?token=5noP7ySJuj4qVTPB0qZdg1pzJQvezRypy&isNeedFile=0&lang=TC';
+
+  /* ─── Timed fetch helper ─── */
   function timedFetch(url, opts, timeout) {
     return new Promise(function(resolve, reject) {
       var done = false;
       var tid = setTimeout(function() {
-        if (!done) { done = true; reject(new Error('timeout:' + url)); }
+        if (!done) { done = true; reject(new Error('timeout')); }
       }, timeout);
       fetch(url, opts || {})
-        .then(function(r) {
-          if (!done) { done = true; clearTimeout(tid); resolve(r); }
-        })
-        .catch(function(e) {
-          if (!done) { done = true; clearTimeout(tid); reject(e); }
-        });
+        .then(function(r) { if (!done) { done = true; clearTimeout(tid); resolve(r); } })
+        .catch(function(e) { if (!done) { done = true; clearTimeout(tid); reject(e); } });
     });
   }
 
-  function fetchViaProxies(path) {
-    var targetUrl = API_BASE + path;
-    var auth = APPCODE;
+  function getJson(r) {
+    if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
+    return r.json();
+  }
+  function getRawText(r) {
+    if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
+    return r.text();
+  }
+  function requireXml(text) {
+    if (!text || text.indexOf('<') === -1) return Promise.reject(new Error('not_xml'));
+    return text;
+  }
 
-    function getText(r) {
-      if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
-      return r.text();
+  /* ─── Fetch realtime maintenance data ─── */
+  function fetchMaintenanceXml() {
+    var newUrl = API_BASE + '/car_park_maintance';
+    var auth   = APPCODE;
+
+    /* 1. New DSAT API — direct (works if browser CORS is configured) */
+    function s1() {
+      return timedFetch(newUrl, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
+        .then(getRawText).then(requireXml);
     }
-
-    /* Strategy 1: direct (works if server has CORS + proper headers) */
-    function tryDirect() {
-      return timedFetch(targetUrl, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
-        .then(getText);
-    }
-
-    /* Strategy 2: corsproxy.io — forwards all request headers to target */
-    function tryCorsproxy() {
+    /* 2. New DSAT API — via corsproxy.io (forwards all request headers) */
+    function s2() {
       return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(targetUrl),
+        'https://corsproxy.io/?' + encodeURIComponent(newUrl),
         { headers: { 'Authorization': auth } },
         FETCH_TIMEOUT
-      ).then(getText);
+      ).then(getRawText).then(requireXml);
     }
-
-    /* Strategy 3: corsproxy.io with x-cors-headers meta-header format */
-    function tryCorsproxyAlt() {
+    /* 3. New DSAT API — corsproxy.io x-cors-headers variant */
+    function s3() {
       return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(targetUrl),
+        'https://corsproxy.io/?' + encodeURIComponent(newUrl),
         { headers: { 'x-cors-headers': '{"Authorization":"' + auth + '"}' } },
         FETCH_TIMEOUT
-      ).then(getText);
+      ).then(getRawText).then(requireXml);
     }
-
-    /* Strategy 4: cors.bridged.cc */
-    function tryBridged() {
+    /* 4. Old data.gov.mo endpoint — via allorigins (no auth header needed) */
+    function s4() {
       return timedFetch(
-        'https://cors.bridged.cc/' + targetUrl,
-        { headers: { 'Authorization': auth, 'x-cors-grida-api-key': 'temp' } },
-        FETCH_TIMEOUT
-      ).then(getText);
-    }
-
-    /* Strategy 5: thingproxy */
-    function tryThingproxy() {
-      return timedFetch(
-        'https://thingproxy.freeboard.io/fetch/' + targetUrl,
-        { headers: { 'Authorization': auth } },
-        FETCH_TIMEOUT
-      ).then(getText);
-    }
-
-    /* Strategy 6: allorigins — no auth, last resort (may get 401/403 response) */
-    function tryAllOrigins() {
-      return timedFetch(
-        'https://api.allorigins.win/get?url=' + encodeURIComponent(targetUrl),
+        'https://api.allorigins.win/get?url=' + encodeURIComponent(OLD_MAINT_URL),
         {},
         FETCH_TIMEOUT
-      ).then(function(r) { return r.json(); })
-       .then(function(j) {
-         if (!j || !j.contents) return Promise.reject(new Error('allorigins empty'));
-         if (j.contents.indexOf('<') === -1) return Promise.reject(new Error('allorigins no xml'));
-         return j.contents;
-       });
+      ).then(getJson)
+       .then(function(j) { return requireXml(j && j.contents); });
+    }
+    /* 5. Old endpoint — via corsproxy.io */
+    function s5() {
+      return timedFetch(
+        'https://corsproxy.io/?' + encodeURIComponent(OLD_MAINT_URL),
+        {},
+        FETCH_TIMEOUT
+      ).then(getRawText).then(requireXml);
+    }
+    /* 6. New API — via allorigins (auth in URL param attempt) */
+    function s6() {
+      var urlWithAuth = newUrl + '?Authorization=' + encodeURIComponent(auth);
+      return timedFetch(
+        'https://api.allorigins.win/get?url=' + encodeURIComponent(urlWithAuth),
+        {},
+        FETCH_TIMEOUT
+      ).then(getJson)
+       .then(function(j) { return requireXml(j && j.contents); });
     }
 
-    var steps = [tryDirect, tryCorsproxy, tryCorsproxyAlt, tryBridged, tryThingproxy, tryAllOrigins];
+    var steps = [s1, s2, s3, s4, s5, s6];
     var lastErr = '';
     function run(i) {
-      if (i >= steps.length) return Promise.reject(new Error('all_failed: ' + lastErr));
+      if (i >= steps.length) return Promise.reject(new Error('all_failed:' + lastErr));
       return steps[i]().catch(function(e) {
-        lastErr = (e && e.message) || String(e);
-        console.warn('[Proxy strategy ' + i + ' failed]', lastErr);
+        lastErr = (e && e.message) || '';
+        console.warn('[Realtime s' + (i+1) + ' failed]', lastErr, i < 3 ? newUrl : OLD_MAINT_URL);
         return run(i + 1);
       });
+    }
+    return run(0);
+  }
+
+  /* ─── Fetch base detail data ─── */
+  function fetchDetailXml() {
+    var url  = API_BASE + '/car_park_detail';
+    var auth = APPCODE;
+    function s1() {
+      return timedFetch(url, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
+        .then(getRawText).then(requireXml);
+    }
+    function s2() {
+      return timedFetch(
+        'https://corsproxy.io/?' + encodeURIComponent(url),
+        { headers: { 'Authorization': auth } },
+        FETCH_TIMEOUT
+      ).then(getRawText).then(requireXml);
+    }
+    function s3() {
+      return timedFetch(
+        'https://corsproxy.io/?' + encodeURIComponent(url),
+        { headers: { 'x-cors-headers': '{"Authorization":"' + auth + '"}' } },
+        FETCH_TIMEOUT
+      ).then(getRawText).then(requireXml);
+    }
+    var steps = [s1, s2, s3];
+    function run(i) {
+      if (i >= steps.length) return Promise.reject(new Error('detail_all_failed'));
+      return steps[i]().catch(function() { return run(i + 1); });
     }
     return run(0);
   }
@@ -393,16 +428,17 @@
     /* fetch realtime spaces */
     var fetchRealtime = useCallback(function(isBackground) {
       if (!isBackground) setRtLoading(true);
-      return fetchViaProxies('/car_park_maintance')
+      return fetchMaintenanceXml()
         .then(function(text) {
           var arr = parseMaintenanceXml(text);
-          if (arr.length === 0) return Promise.reject(new Error('empty response'));
+          if (arr.length === 0) return Promise.reject(new Error('empty_parsed'));
           setRealtimeArr(arr);
-          var now = new Date();
-          setLastRtTs(now);
+          setLastRtTs(new Date());
           setConnStatus('ok');
+          console.log('[Realtime OK] parsed', arr.length, 'parks. Sample:', arr[0]);
         })
-        .catch(function() {
+        .catch(function(e) {
+          console.error('[Realtime FAILED]', e && e.message);
           var prev = lastRtTsRef.current;
           if (prev && (Date.now() - prev.getTime()) < 120000) {
             setConnStatus('delayed');
@@ -419,7 +455,7 @@
     var syncBaseData = useCallback(function() {
       setBaseSyncLoading(true);
       setBaseSyncMsg('');
-      return fetchViaProxies('/car_park_detail')
+      return fetchDetailXml()
         .then(function(text) {
           var parsed = parseDetailXml(text);
           if (parsed.length === 0) return Promise.reject(new Error('empty'));
@@ -500,10 +536,12 @@
       setSearchText(park.name);
       setSuggestions([]);
       setShowSugg(false);
+      /* Centre distance on this park so it sorts first, use 500m radius to show nearby */
       setUserLocation({ lat: park.lat, lng: park.lng });
       setLocationLabel('搜尋：' + park.name);
       setSelectedRegion('全部');
       setRadius(Infinity);
+      setSortBy('distance'); /* ensure clicked park shows first */
     }, []);
 
     var handleSearchSubmit = useCallback(function() {
