@@ -31,6 +31,7 @@
   const API_BASE = 'https://dsat.apigateway.data.gov.mo';
   const LS_BASE_KEY  = 'mcp_base_v2';
   const LS_BASE_TS   = 'mcp_base_ts_v2';
+  const LS_PROXY_KEY = 'mcp_custom_proxy';
   const HALF_YEAR_MS = 180 * 24 * 60 * 60 * 1000;
   const REALTIME_INTERVAL = 30000;
   const FETCH_TIMEOUT = 8000;
@@ -244,106 +245,217 @@
     if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
     return r.text();
   }
+
+  /* A public CORS proxy that has stopped serving anonymous traffic answers
+     with its own HTML error / landing page instead of the upstream body.
+     That page contains '<', so a naive "looks like markup" check accepts it:
+     the fallback chain stops at that strategy and never tries the remaining
+     ones, and the parser then finds zero records — the 'empty_parsed' symptom.
+     Require the payload to actually carry a carpark record, so a proxy that
+     answers with something else counts as a failure and the chain moves on. */
+  var CARPARK_MARKERS = ['carparkinfo', 'car_park_info', 'car_park_no', 'cp_id'];
+
+  function looksLikeCarparkXml(text) {
+    if (!text) return false;
+    var lower = text.toLowerCase();
+    for (var i = 0; i < CARPARK_MARKERS.length; i++) {
+      if (lower.indexOf(CARPARK_MARKERS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  /* Short, human-readable description of whatever came back, for the
+     on-screen diagnostics when every strategy fails. */
+  function describePayload(text) {
+    var t = (text || '').replace(/\s+/g, ' ').trim();
+    if (!t) return 'empty_body';
+    var kind = /^<!doctype html|^<html/i.test(t) ? 'HTML頁'
+             : (t.charAt(0) === '{' || t.charAt(0) === '[') ? 'JSON'
+             : t.charAt(0) === '<' ? 'XML' : '純文字';
+    return kind + '/' + t.length + 'B: ' + t.slice(0, 110);
+  }
+
   function requireXml(text) {
-    if (!text || text.indexOf('<') === -1) return Promise.reject(new Error('not_xml'));
+    if (!text || text.indexOf('<') === -1) {
+      return Promise.reject(new Error('not_xml · ' + describePayload(text)));
+    }
+    if (!looksLikeCarparkXml(text)) {
+      return Promise.reject(new Error('no_carpark_data · ' + describePayload(text)));
+    }
     return text;
+  }
+
+  /* allorigins /get wraps the body in JSON, and for content types it treats
+     as binary it hands back a data: URI rather than the text itself. */
+  function fromAllOrigins(j) {
+    var c = j && j.contents;
+    if (typeof c === 'string' && c.indexOf('data:') === 0) {
+      var comma = c.indexOf(',');
+      var meta = c.slice(0, comma), body = c.slice(comma + 1);
+      if (meta.indexOf('base64') !== -1) {
+        try {
+          var bin = atob(body);
+          var bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          /* decode as UTF-8 so the Chinese carpark names survive */
+          c = new TextDecoder('utf-8').decode(bytes);
+        } catch (e) { c = ''; }
+      } else {
+        try { c = decodeURIComponent(body); } catch (e) { c = body; }
+      }
+    }
+    return requireXml(c);
+  }
+
+  /* Runs the fallback strategies in order and keeps a note of how each one
+     failed, so a user who sees the error panel can report the whole chain
+     instead of only the last message. */
+  function runStrategies(label, steps) {
+    var report = [];
+    function run(i) {
+      if (i >= steps.length) {
+        var err = new Error('全部 ' + steps.length + ' 個途徑都失敗');
+        err.report = report;
+        return Promise.reject(err);
+      }
+      return steps[i].fn()
+        .then(function(text) {
+          console.log('[' + label + '] ✅ ' + steps[i].name);
+          return text;
+        })
+        .catch(function(e) {
+          var msg = (e && e.message) || 'unknown_error';
+          report.push((i + 1) + '. ' + steps[i].name + ' → ' + msg);
+          console.warn('[' + label + '] ❌ ' + steps[i].name, msg);
+          return run(i + 1);
+        });
+    }
+    return run(0);
+  }
+
+  /* ─── CORS proxy front-ends ───────────────────────────────────────────
+     This is a static site with no backend, so the official API can only be
+     reached through a relay. Each entry says whether it passes our custom
+     Authorization header through; the ones that do not are paired with the
+     query-parameter form of the credential instead. */
+  function viaCorsProxy(url)    { return 'https://corsproxy.io/?' + encodeURIComponent(url); }
+  function viaAllOriginsRaw(url){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url); }
+  function viaAllOriginsGet(url){ return 'https://api.allorigins.win/get?url=' + encodeURIComponent(url); }
+  function viaCodeTabs(url)     { return 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url); }
+
+  /* Optional relay the user controls (e.g. a Cloudflare Worker). Stored in
+     localStorage so it can be set from the settings panel without a redeploy;
+     when present it is tried first, because it is the only route here that
+     does not depend on a third-party free service staying up. */
+  function customProxyBase() {
+    try { return (localStorage.getItem(LS_PROXY_KEY) || '').trim(); } catch (e) { return ''; }
+  }
+  function viaCustomProxy(url) {
+    var base = customProxyBase();
+    if (!base) return '';
+    return base.indexOf('?') === -1
+      ? base.replace(/\/$/, '') + '/?url=' + encodeURIComponent(url)
+      : base + encodeURIComponent(url);
+  }
+
+  /* APPCODE as a bare query parameter, for relays that drop custom headers. */
+  function withAppCode(url) {
+    var code = APPCODE.replace(/^APPCODE\s+/i, '');
+    return url + (url.indexOf('?') === -1 ? '?' : '&') + 'AppCode=' + encodeURIComponent(code);
+  }
+
+  function rawXml(url, headers) {
+    return timedFetch(url, headers ? { headers: headers } : {}, FETCH_TIMEOUT)
+      .then(getRawText).then(requireXml);
+  }
+  function wrappedXml(url) {
+    return timedFetch(url, {}, FETCH_TIMEOUT).then(getJson).then(fromAllOrigins);
   }
 
   /* ─── Fetch realtime maintenance data ─── */
   function fetchMaintenanceXml() {
     var newUrl = API_BASE + '/car_park_maintance';
     var auth   = APPCODE;
+    var steps  = [];
 
-    /* 1. New DSAT API — direct (works if browser CORS is configured) */
-    function s1() {
-      return timedFetch(newUrl, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
-        .then(getRawText).then(requireXml);
-    }
-    /* 2. New DSAT API — via corsproxy.io (forwards all request headers) */
-    function s2() {
-      return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(newUrl),
-        { headers: { 'Authorization': auth } },
-        FETCH_TIMEOUT
-      ).then(getRawText).then(requireXml);
-    }
-    /* 3. New DSAT API — corsproxy.io x-cors-headers variant */
-    function s3() {
-      return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(newUrl),
-        { headers: { 'x-cors-headers': '{"Authorization":"' + auth + '"}' } },
-        FETCH_TIMEOUT
-      ).then(getRawText).then(requireXml);
-    }
-    /* 4. Old data.gov.mo endpoint — via allorigins (no auth header needed) */
-    function s4() {
-      return timedFetch(
-        'https://api.allorigins.win/get?url=' + encodeURIComponent(OLD_MAINT_URL),
-        {},
-        FETCH_TIMEOUT
-      ).then(getJson)
-       .then(function(j) { return requireXml(j && j.contents); });
-    }
-    /* 5. Old endpoint — via corsproxy.io */
-    function s5() {
-      return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(OLD_MAINT_URL),
-        {},
-        FETCH_TIMEOUT
-      ).then(getRawText).then(requireXml);
-    }
-    /* 6. New API — via allorigins (auth in URL param attempt) */
-    function s6() {
-      var urlWithAuth = newUrl + '?Authorization=' + encodeURIComponent(auth);
-      return timedFetch(
-        'https://api.allorigins.win/get?url=' + encodeURIComponent(urlWithAuth),
-        {},
-        FETCH_TIMEOUT
-      ).then(getJson)
-       .then(function(j) { return requireXml(j && j.contents); });
+    if (customProxyBase()) {
+      steps.push({ name: '自設中轉 (即時)', fn: function() {
+        return rawXml(viaCustomProxy(newUrl), { 'Authorization': auth });
+      } });
     }
 
-    var steps = [s1, s2, s3, s4, s5, s6];
-    var lastErr = '';
-    function run(i) {
-      if (i >= steps.length) return Promise.reject(new Error('all_failed:' + lastErr));
-      return steps[i]().catch(function(e) {
-        lastErr = (e && e.message) || '';
-        console.warn('[Realtime s' + (i+1) + ' failed]', lastErr, i < 3 ? newUrl : OLD_MAINT_URL);
-        return run(i + 1);
-      });
-    }
-    return run(0);
+    steps.push(
+      /* Header-forwarding routes to the current DSAT endpoint. */
+      { name: 'DSAT 直連', fn: function() {
+          return rawXml(newUrl, { 'Authorization': auth });
+      } },
+      { name: 'corsproxy.io + Authorization', fn: function() {
+          return rawXml(viaCorsProxy(newUrl), { 'Authorization': auth });
+      } },
+      { name: 'corsproxy.io + x-cors-headers', fn: function() {
+          return rawXml(viaCorsProxy(newUrl),
+            { 'x-cors-headers': '{"Authorization":"' + auth + '"}' });
+      } },
+      /* Header-dropping relays, using the query-parameter credential. */
+      { name: 'allorigins/raw + AppCode 參數', fn: function() {
+          return rawXml(viaAllOriginsRaw(withAppCode(newUrl)));
+      } },
+      { name: 'codetabs + AppCode 參數', fn: function() {
+          return rawXml(viaCodeTabs(withAppCode(newUrl)));
+      } },
+      /* Legacy token-in-URL endpoint, which needs no auth header at all. */
+      { name: 'allorigins/raw + 舊版來源', fn: function() {
+          return rawXml(viaAllOriginsRaw(OLD_MAINT_URL));
+      } },
+      { name: 'allorigins/get + 舊版來源', fn: function() {
+          return wrappedXml(viaAllOriginsGet(OLD_MAINT_URL));
+      } },
+      { name: 'codetabs + 舊版來源', fn: function() {
+          return rawXml(viaCodeTabs(OLD_MAINT_URL));
+      } },
+      { name: 'corsproxy.io + 舊版來源', fn: function() {
+          return rawXml(viaCorsProxy(OLD_MAINT_URL));
+      } }
+    );
+
+    return runStrategies('即時車位', steps);
   }
 
   /* ─── Fetch base detail data ─── */
   function fetchDetailXml() {
     var url  = API_BASE + '/car_park_detail';
     var auth = APPCODE;
-    function s1() {
-      return timedFetch(url, { headers: { 'Authorization': auth } }, FETCH_TIMEOUT)
-        .then(getRawText).then(requireXml);
+    var steps = [];
+
+    if (customProxyBase()) {
+      steps.push({ name: '自設中轉 (基礎)', fn: function() {
+        return rawXml(viaCustomProxy(url), { 'Authorization': auth });
+      } });
     }
-    function s2() {
-      return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(url),
-        { headers: { 'Authorization': auth } },
-        FETCH_TIMEOUT
-      ).then(getRawText).then(requireXml);
-    }
-    function s3() {
-      return timedFetch(
-        'https://corsproxy.io/?' + encodeURIComponent(url),
-        { headers: { 'x-cors-headers': '{"Authorization":"' + auth + '"}' } },
-        FETCH_TIMEOUT
-      ).then(getRawText).then(requireXml);
-    }
-    var steps = [s1, s2, s3];
-    function run(i) {
-      if (i >= steps.length) return Promise.reject(new Error('detail_all_failed'));
-      return steps[i]().catch(function() { return run(i + 1); });
-    }
-    return run(0);
+
+    steps.push(
+      { name: 'DSAT 直連', fn: function() {
+          return rawXml(url, { 'Authorization': auth });
+      } },
+      { name: 'corsproxy.io + Authorization', fn: function() {
+          return rawXml(viaCorsProxy(url), { 'Authorization': auth });
+      } },
+      { name: 'corsproxy.io + x-cors-headers', fn: function() {
+          return rawXml(viaCorsProxy(url),
+            { 'x-cors-headers': '{"Authorization":"' + auth + '"}' });
+      } },
+      { name: 'allorigins/raw + AppCode 參數', fn: function() {
+          return rawXml(viaAllOriginsRaw(withAppCode(url)));
+      } },
+      { name: 'allorigins/get + AppCode 參數', fn: function() {
+          return wrappedXml(viaAllOriginsGet(withAppCode(url)));
+      } },
+      { name: 'codetabs + AppCode 參數', fn: function() {
+          return rawXml(viaCodeTabs(withAppCode(url)));
+      } }
+    );
+
+    return runStrategies('基礎資料', steps);
   }
 
   /* ─── localStorage helpers ─── */
@@ -430,6 +542,10 @@
     var [listening, setListening]             = useState(false);
     var recRef = useRef(null);
     var [showSettings, setShowSettings]       = useState(false);
+    var [showDiag, setShowDiag]               = useState(false);
+    var [diagCopied, setDiagCopied]           = useState(false);
+    var [proxyInput, setProxyInput]           = useState(customProxyBase());
+    var [proxySaved, setProxySaved]           = useState(false);
     var [baseSyncLoading, setBaseSyncLoading] = useState(false);
     var [baseSyncMsg, setBaseSyncMsg]         = useState('');
     var [lastBaseSync, setLastBaseSync]       = useState(storedTs);
@@ -444,8 +560,8 @@
         .then(function(text) {
           var arr = parseMaintenanceXml(text);
           if (arr.length === 0) {
-            var snippet = (text || '').replace(/\s+/g, ' ').slice(0, 160);
-            return Promise.reject(new Error('empty_parsed，收到內容：' + snippet));
+            return Promise.reject(new Error(
+              '取到回應但解析到 0 個停車場 · ' + describePayload(text)));
           }
           setRealtimeArr(arr);
           setLastRtTs(new Date());
@@ -453,8 +569,9 @@
           console.log('[Realtime OK] parsed', arr.length, 'parks. Sample:', arr[0]);
         })
         .catch(function(e) {
-          console.error('[Realtime FAILED]', e && e.message);
-          setLastErrMsg((e && e.message) || 'unknown_error');
+          console.error('[Realtime FAILED]', e && e.message, e && e.report);
+          var lines = (e && e.report) ? e.report : [];
+          setLastErrMsg([(e && e.message) || 'unknown_error'].concat(lines).join('\n'));
           var prev = lastRtTsRef.current;
           if (prev && (Date.now() - prev.getTime()) < 120000) {
             setConnStatus('delayed');
@@ -475,8 +592,8 @@
         .then(function(text) {
           var parsed = parseDetailXml(text);
           if (parsed.length === 0) {
-            var snippet = (text || '').replace(/\s+/g, ' ').slice(0, 160);
-            return Promise.reject(new Error('empty，收到內容：' + snippet));
+            return Promise.reject(new Error(
+              '取到回應但解析到 0 個停車場 · ' + describePayload(text)));
           }
           var merged = BUILTIN_DB.map(function(b) {
             var remote = null;
@@ -511,7 +628,10 @@
           setBaseSyncMsg('同步成功！已更新 ' + parsed.length + ' 個停車場資料。');
         })
         .catch(function(e) {
-          setBaseSyncMsg('同步失敗：' + (e && e.message ? e.message : '網絡錯誤，請稍後再試'));
+          console.error('[BaseSync FAILED]', e && e.message, e && e.report);
+          var lines = (e && e.report) ? e.report : [];
+          setBaseSyncMsg(['同步失敗：' + (e && e.message ? e.message : '網絡錯誤，請稍後再試')]
+            .concat(lines).join('\n'));
         })
         .then(function() {
           setBaseSyncLoading(false);
@@ -592,6 +712,40 @@
         .catch(function() {})
         .then(function() { setSearchLoading(false); });
     }, [searchText, parksBase, handleSuggClick]);
+
+    /* Copy the whole failure chain, so it can be pasted back verbatim
+       instead of retyped from a phone screen. */
+    var copyDiag = useCallback(function() {
+      var payload = [
+        '找車位小助手 連線診斷',
+        '時間：' + new Date().toLocaleString('zh-HK'),
+        'UA：' + navigator.userAgent,
+        '自設中轉：' + (customProxyBase() || '（未設定）'),
+        '',
+        lastErrMsg
+      ].join('\n');
+      var done = function() {
+        setDiagCopied(true);
+        setTimeout(function(){ setDiagCopied(false); }, 2000);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(payload).then(done, function(){ window.prompt('請手動複製：', payload); });
+      } else {
+        window.prompt('請手動複製：', payload);
+      }
+    }, [lastErrMsg]);
+
+    /* Save the user-controlled relay and immediately retry through it. */
+    var saveProxy = useCallback(function() {
+      var v = (proxyInput || '').trim();
+      try {
+        if (v) localStorage.setItem(LS_PROXY_KEY, v);
+        else localStorage.removeItem(LS_PROXY_KEY);
+      } catch (e) {}
+      setProxySaved(true);
+      setTimeout(function(){ setProxySaved(false); }, 2000);
+      fetchRealtime(false);
+    }, [proxyInput, fetchRealtime]);
 
     /* Voice search */
     var startVoice = useCallback(function() {
@@ -796,9 +950,26 @@
               </div>
             </div>
             {(connStatus === 'error' || connStatus === 'delayed') && lastErrMsg && (
-              <p className="text-emerald-300 text-[9px] mt-0.5 opacity-70 break-all">
-                錯誤詳情：{lastErrMsg}
-              </p>
+              <div className="mt-1">
+                <div className="flex items-center space-x-3">
+                  <button onClick={function(){ setShowDiag(!showDiag); }}
+                    className="text-emerald-300 text-[10px] underline opacity-80 hover:opacity-100">
+                    <i className={'fa-solid fa-chevron-' + (showDiag ? 'up' : 'down') + ' mr-1 text-[8px]'}></i>
+                    {showDiag ? '收起診斷' : '連線診斷詳情'}
+                  </button>
+                  {showDiag && (
+                    <button onClick={copyDiag}
+                      className="text-emerald-300 text-[10px] underline opacity-80 hover:opacity-100">
+                      <i className="fa-solid fa-copy mr-1 text-[8px]"></i>{diagCopied ? '已複製' : '複製'}
+                    </button>
+                  )}
+                </div>
+                {showDiag && (
+                  <pre className="text-emerald-200 text-[9px] mt-1 opacity-80 whitespace-pre-wrap break-all leading-relaxed">
+                    {lastErrMsg}
+                  </pre>
+                )}
+              </div>
             )}
           </div>
 
@@ -838,11 +1009,31 @@
                     : <span><i className="fa-solid fa-cloud-arrow-down mr-2"></i>立即同步基礎資料</span>}
                 </button>
                 {baseSyncMsg && (
-                  <div className={'mt-2 text-xs px-2 py-1 rounded ' +
+                  <div className={'mt-2 text-[11px] px-2 py-1 rounded whitespace-pre-wrap break-all ' +
                     (baseSyncMsg.indexOf('成功') !== -1 ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200')}>
                     {baseSyncMsg}
                   </div>
                 )}
+              </div>
+
+              <div className="bg-slate-700 rounded-lg p-3 mb-3">
+                <div className="text-xs font-semibold text-slate-300 mb-1">自設中轉網址（進階）</div>
+                <div className="text-[10px] text-slate-400 mb-2">
+                  本程式係純靜態網站，要借中轉服務先讀到交通局 API。<br/>
+                  公用中轉全部失效時，可以填自己控制嘅中轉（例如 Cloudflare Worker），系統會優先用佢。
+                </div>
+                <input
+                  type="url"
+                  value={proxyInput}
+                  onChange={function(e){ setProxyInput(e.target.value); }}
+                  placeholder="https://xxx.workers.dev/"
+                  className="w-full px-2 py-1.5 rounded bg-slate-800 text-white text-xs placeholder-slate-500 border border-slate-600 focus:border-emerald-500 outline-none mb-2"
+                />
+                <button
+                  onClick={saveProxy}
+                  className="w-full py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
+                  <i className="fa-solid fa-floppy-disk mr-2"></i>{proxySaved ? '已儲存' : '儲存並重試'}
+                </button>
               </div>
 
               <div className="bg-slate-700 rounded-lg p-3">
