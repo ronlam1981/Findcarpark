@@ -528,6 +528,63 @@
     return runStrategies('基礎資料', steps);
   }
 
+  /* null means DSAT does not report that vehicle type, which is not the
+     same as no free spaces — callers that sort or compare must keep them
+     apart, so this returns null rather than 0 in that case. */
+  function getVehicleSpaces(park, type) {
+    if (!park.spaces) return null;
+    if (type === 'light') return park.spaces.light;
+    if (type === 'moto')  return park.spaces.moto;
+    if (type === 'ev')    return park.spaces.ev;
+    var sum = null;
+    ['light', 'moto', 'ev', 'heavy'].forEach(function(k) {
+      if (park.spaces[k] !== null && park.spaces[k] !== undefined) {
+        sum = (sum === null ? 0 : sum) + park.spaces[k];
+      }
+    });
+    return sum;
+  }
+
+  /* Distance, with unknown distances last and a stable name order between
+     them. Used both as a sort key and as a tie-breaker. */
+  function byDistance(a, b) {
+    if (a.distance === null && b.distance === null) {
+      return String(a.name).localeCompare(String(b.name), 'zh-Hant');
+    }
+    if (a.distance === null) return 1;
+    if (b.distance === null) return -1;
+    return a.distance - b.distance;
+  }
+
+  /* Whichever key the user picked is the primary key. Availability used to
+     be applied ahead of it, so 距離最近 put a carpark across the road below
+     one two kilometres away whenever the near one was full or unreported —
+     and once a vehicle type DSAT does not report was selected, every
+     carpark compared equal and the list ignored distance altogether. */
+  function parkComparator(sortBy, vehicleType) {
+    return function(a, b) {
+      if (sortBy === 'distance') return byDistance(a, b);
+
+      if (sortBy === 'fee') {
+        if (a.currentFee !== b.currentFee) return a.currentFee - b.currentFee;
+        return byDistance(a, b);
+      }
+
+      /* 車位最多: a carpark whose count is unknown cannot be ranked by it,
+         so those go last — here that demotion is the honest answer rather
+         than an override of what the user asked for. */
+      var aS = getVehicleSpaces(a, vehicleType);
+      var bS = getVehicleSpaces(b, vehicleType);
+      var aUnk = (aS === null || aS === undefined);
+      var bUnk = (bS === null || bS === undefined);
+      if (aUnk && bUnk) return byDistance(a, b);
+      if (aUnk) return 1;
+      if (bUnk) return -1;
+      if (bS !== aS) return bS - aS;
+      return byDistance(a, b);
+    };
+  }
+
   /* ─── localStorage helpers ─── */
   function loadStoredBase() {
     try {
@@ -606,6 +663,8 @@
     var [activeNavId, setActiveNavId]         = useState(null);
     var [gpsError, setGpsError]               = useState(null);
     var [searchText, setSearchText]           = useState('');
+    /* id of the one carpark the user asked to look up, or null for the list */
+    var [focusParkId, setFocusParkId]         = useState(null);
     var [suggestions, setSuggestions]         = useState([]);
     var [showSugg, setShowSugg]               = useState(false);
     var [searchLoading, setSearchLoading]     = useState(false);
@@ -739,29 +798,52 @@
     /* search autocomplete */
     var handleSearchInput = useCallback(function(val) {
       setSearchText(val);
-      if (val.length < 2) {
+      if (val.length < 1) {
         setSuggestions([]);
         setShowSugg(false);
         return;
       }
       var lower = val.toLowerCase();
+      /* Match the carpark number and the address too, not only the name:
+         people look one up by whichever of those they happen to know. */
       var matches = parksBase.filter(function(p) {
-        return p.name.toLowerCase().indexOf(lower) !== -1;
-      }).slice(0, 5);
+        return p.name.toLowerCase().indexOf(lower) !== -1
+            || String(p.id) === lower
+            || (p.address || '').toLowerCase().indexOf(lower) !== -1;
+      }).slice(0, 8);
       setSuggestions(matches);
       setShowSugg(matches.length > 0);
     }, [parksBase]);
 
+    /* Look up one carpark. This shows that carpark on its own and leaves the
+       location alone: it used to move "your location" onto the carpark, so
+       every distance afterwards was measured from there while still being
+       presented as the distance from you. */
     var handleSuggClick = useCallback(function(park) {
       setSearchText(park.name);
       setSuggestions([]);
       setShowSugg(false);
-      /* Centre distance on this park so it sorts first, use 500m radius to show nearby */
-      setUserLocation({ lat: park.lat, lng: park.lng });
-      setLocationLabel('搜尋：' + park.name);
+      setFocusParkId(park.id);
       setSelectedRegion('全部');
       setRadius(Infinity);
-      setSortBy('distance'); /* ensure clicked park shows first */
+    }, []);
+
+    /* The other half of a lookup: what else is near that carpark. Here the
+       origin really does move, and the header says so. */
+    var handleCentreOnPark = useCallback(function(park) {
+      setFocusParkId(null);
+      setUserLocation({ lat: park.lat, lng: park.lng });
+      setLocationLabel('以「' + park.name + '」為中心');
+      setSelectedRegion('全部');
+      setRadius(1000);
+      setSortBy('distance');
+    }, []);
+
+    var clearFocus = useCallback(function() {
+      setFocusParkId(null);
+      setSearchText('');
+      setSuggestions([]);
+      setShowSugg(false);
     }, []);
 
     var handleSearchSubmit = useCallback(function() {
@@ -775,6 +857,7 @@
         handleSuggClick(exact);
         return;
       }
+      setFocusParkId(null);
       setSearchLoading(true);
       var nomUrl = 'https://nominatim.openstreetmap.org/search?q=' +
         encodeURIComponent(searchText + ' 澳門') +
@@ -868,6 +951,7 @@
         return;
       }
       setGpsError(null);
+      setFocusParkId(null);
       setSelectedRegion('全部');
       navigator.geolocation.getCurrentPosition(
         function(pos) {
@@ -882,6 +966,7 @@
     }, []);
 
     var handleMockLocation = useCallback(function() {
+      setFocusParkId(null);
       setSelectedRegion('全部');
       setUserLocation({ lat: 22.194500, lng: 113.538500 });
       setLocationLabel('模擬：新馬路');
@@ -903,6 +988,12 @@
         return Object.assign({}, p, { distance: dist, currentFee: fi.fee, feeLabel: fi.label });
       });
 
+      /* A lookup of one carpark answers about that carpark, so neither the
+         region nor the radius should be able to filter it away. */
+      if (focusParkId !== null) {
+        return list.filter(function(p) { return String(p.id) === String(focusParkId); });
+      }
+
       if (selectedRegion !== '全部') {
         list = list.filter(function(p) { return p.region === selectedRegion; });
       }
@@ -910,32 +1001,15 @@
         list = list.filter(function(p) { return p.distance !== null && p.distance <= radius; });
       }
 
-      list.sort(function(a, b) {
-        var aOff = !a.hasRealtime, bOff = !b.hasRealtime;
-        if (aOff && !bOff) return 1;
-        if (!aOff && bOff) return -1;
+      list.sort(parkComparator(sortBy, vehicleType));
 
-        var aS = getVehicleSpaces(a, vehicleType);
-        var bS = getVehicleSpaces(b, vehicleType);
-        /* A carpark DSAT does not report on sorts after the ones it does,
-           but ahead of the ones it reports as full. */
-        var aFull = aS === 0, bFull = bS === 0;
-        if (aFull && !bFull) return 1;
-        if (!aFull && bFull) return -1;
-        var aUnk = aS === null, bUnk = bS === null;
-        if (aUnk && !bUnk) return 1;
-        if (!aUnk && bUnk) return -1;
-        if (aUnk && bUnk) return 0;
-
-        if (sortBy === 'distance' && a.distance !== null && b.distance !== null) {
-          return a.distance - b.distance;
-        }
-        if (sortBy === 'spaces') return bS - aS;
-        if (sortBy === 'fee') return a.currentFee - b.currentFee;
-        return bS - aS;
-      });
       return list;
-    }, [mergedParks, userLocation, radius, selectedRegion, vehicleType, sortBy]);
+    }, [mergedParks, userLocation, radius, selectedRegion, vehicleType, sortBy, focusParkId]);
+
+    var focusedPark = useMemo(function() {
+      if (focusParkId === null) return null;
+      return displayedParks.length ? displayedParks[0] : null;
+    }, [displayedParks, focusParkId]);
 
     /* region stats */
     var regionStats = useMemo(function() {
@@ -955,23 +1029,6 @@
       });
       return { count: pool.length, st: st };
     }, [mergedParks, selectedRegion]);
-
-    /* null means DSAT does not report that vehicle type, which is not the
-       same as no free spaces — callers that sort or compare must keep them
-       apart, so this returns null rather than 0 in that case. */
-    function getVehicleSpaces(park, type) {
-      if (!park.spaces) return null;
-      if (type === 'light') return park.spaces.light;
-      if (type === 'moto')  return park.spaces.moto;
-      if (type === 'ev')    return park.spaces.ev;
-      var sum = null;
-      ['light', 'moto', 'ev', 'heavy'].forEach(function(k) {
-        if (park.spaces[k] !== null && park.spaces[k] !== undefined) {
-          sum = (sum === null ? 0 : sum) + park.spaces[k];
-        }
-      });
-      return sum;
-    }
 
     function openMap(type, lat, lng, name) {
       var url = '';
@@ -1162,13 +1219,13 @@
                   onChange={function(e){ handleSearchInput(e.target.value); }}
                   onKeyDown={function(e){ if(e.key==='Enter') handleSearchSubmit(); }}
                   onFocus={function(){ if(suggestions.length>0) setShowSugg(true); }}
-                  placeholder="搜尋停車場或地標…"
+                  placeholder="搜尋停車場名稱、編號、地址或地標…"
                   className="flex-1 py-2.5 px-3 text-sm outline-none bg-transparent"
                 />
                 {searchLoading
                   ? <i className="fa-solid fa-rotate spin text-emerald-500 mr-3"></i>
                   : searchText
-                    ? <button onClick={function(){setSearchText('');setSuggestions([]);setShowSugg(false);}}
+                    ? <button onClick={clearFocus}
                         className="mr-3 text-gray-400 hover:text-gray-600">
                         <i className="fa-solid fa-xmark"></i>
                       </button>
@@ -1194,10 +1251,15 @@
                   {suggestions.map(function(s) {
                     return (
                       <button key={s.id} onClick={function(){ handleSuggClick(s); }}
-                        className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 text-sm border-b border-gray-100 last:border-0 flex items-center space-x-2">
-                        <i className="fa-solid fa-square-parking text-emerald-500 text-xs"></i>
-                        <span className="flex-1">{s.name}</span>
-                        <span className="text-[10px] text-gray-400">{s.region}</span>
+                        className="w-full text-left px-4 py-2.5 hover:bg-emerald-50 text-sm border-b border-gray-100 last:border-0 flex items-start space-x-2">
+                        <i className="fa-solid fa-square-parking text-emerald-500 text-xs mt-1"></i>
+                        <span className="flex-1 min-w-0">
+                          <span className="block truncate">{s.name}</span>
+                          {s.address && (
+                            <span className="block text-[10px] text-gray-400 truncate">{s.address}</span>
+                          )}
+                        </span>
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap mt-0.5">{s.region}</span>
                       </button>
                     );
                   })}
@@ -1341,11 +1403,46 @@
 
           {/* ── Park List ── */}
           <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
+
+            {/* Looking up one carpark */}
+            {focusParkId !== null && (
+              <div className="mx-4 mt-3 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-blue-800 flex items-center min-w-0">
+                    <i className="fa-solid fa-magnifying-glass-location mr-2 shrink-0"></i>
+                    <span className="truncate">
+                      {focusedPark ? '只顯示：' + focusedPark.name : '搵唔到呢個停車場'}
+                    </span>
+                  </span>
+                  <button onClick={clearFocus}
+                    className="ml-2 shrink-0 text-[11px] text-blue-700 underline hover:text-blue-900">
+                    顯示全部
+                  </button>
+                </div>
+                {focusedPark && (
+                  <button onClick={function(){ handleCentreOnPark(focusedPark); }}
+                    className="mt-2 w-full py-1.5 rounded-lg bg-white border border-blue-300 text-blue-700 text-[11px] font-medium hover:bg-blue-100 transition-colors">
+                    <i className="fa-solid fa-location-dot mr-1"></i>睇吓呢個停車場附近仲有咩
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 距離最近 needs a location to sort by */}
+            {focusParkId === null && sortBy === 'distance' && !userLocation && (
+              <div className="mx-4 mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 flex items-start">
+                <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
+                <span>未知你喺邊，暫時排唔到距離。㩒上面「搵車位」開定位，或者搜尋一個地標。</span>
+              </div>
+            )}
+
             <div className="px-4 py-2 flex justify-between items-center">
               <span className="text-xs text-gray-500">
-                {userLocation && radius !== Infinity
-                  ? '找到 ' + displayedParks.length + ' 個停車場'
-                  : '列出 ' + displayedParks.length + ' 個停車場'}
+                {focusParkId !== null
+                  ? '個別停車場'
+                  : (userLocation && radius !== Infinity
+                      ? '找到 ' + displayedParks.length + ' 個停車場'
+                      : '列出 ' + displayedParks.length + ' 個停車場')}
               </span>
               {realtimeArr.length > 0 && (
                 <span className="text-[10px] text-gray-400">
