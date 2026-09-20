@@ -585,6 +585,84 @@
     };
   }
 
+  /* ─── Fuzzy search ───────────────────────────────────────────────────
+     Nobody types a carpark's full registered name. Someone after
+     「黑沙海灘公園停車場」 types 黑沙公園, and someone after
+     「華士古達嘉馬花園停車場」 types 華士古 — so a plain substring test
+     finds the first and misses the second. Score instead of filter, and
+     rank by how well each candidate matches. */
+
+  /* Ignore the noise words nearly every name ends with, plus spacing, so
+     they neither help nor hurt a match. */
+  function normaliseQuery(q) {
+    return String(q || '').toLowerCase()
+      .replace(/[\s\u3000]+/g, '')
+      .replace(/(停車場|停車塲|車場|parking|carpark)/g, '');
+  }
+
+  function fuzzyScore(query, text) {
+    var q = normaliseQuery(query);
+    var t = String(text || '').toLowerCase();
+    if (!q || !t) return 0;
+
+    var at = t.indexOf(q);
+    if (at === 0) return 1000;                     /* starts with it */
+    if (at > 0)   return 900 - Math.min(at, 50);   /* contains it, earlier is better */
+
+    /* Every character present, in order but not necessarily adjacent:
+       this is what makes 黑沙公園 find 黑沙海灘公園停車場. */
+    var pos = 0, gaps = 0, matched = 0, firstAt = -1;
+    for (var i = 0; i < q.length; i++) {
+      var found = t.indexOf(q.charAt(i), pos);
+      if (found === -1) break;
+      if (firstAt === -1) firstAt = found;
+      gaps += found - pos;
+      pos = found + 1;
+      matched++;
+    }
+    if (matched === q.length) {
+      return 700 - Math.min(gaps * 4, 250) - Math.min(firstAt * 2, 100);
+    }
+
+    /* Out of order, or a character or two off: accept only when most of
+       what was typed is there, so one common character cannot match
+       everything. */
+    var hits = 0;
+    for (var j = 0; j < q.length; j++) {
+      if (t.indexOf(q.charAt(j)) !== -1) hits++;
+    }
+    var ratio = hits / q.length;
+    return (q.length >= 2 && ratio >= 0.7) ? Math.round(200 * ratio) : 0;
+  }
+
+  /* How well one carpark answers the query. The name carries the most
+     weight; an address or district match still counts, but ranks below a
+     name match so it never displaces one. */
+  function parkSearchScore(park, query) {
+    var q = String(query || '').trim();
+    if (!q) return 0;
+    if (String(park.id) === q) return 2000;
+
+    var best = fuzzyScore(q, park.name);
+    var addr = fuzzyScore(q, park.address);
+    if (addr > 0) addr = Math.max(1, addr - 250);
+    var reg  = fuzzyScore(q, park.region);
+    if (reg > 0) reg = Math.max(1, reg - 350);
+    return Math.max(best, addr, reg);
+  }
+
+  function searchParks(parks, query, limit) {
+    var scored = [];
+    for (var i = 0; i < parks.length; i++) {
+      var sc = parkSearchScore(parks[i], query);
+      if (sc > 0) scored.push({ park: parks[i], score: sc, i: i });
+    }
+    scored.sort(function(a, b) {
+      return b.score !== a.score ? b.score - a.score : a.i - b.i;
+    });
+    return scored.slice(0, limit || 8).map(function(x) { return x.park; });
+  }
+
   /* ─── localStorage helpers ─── */
   function loadStoredBase() {
     try {
@@ -668,8 +746,6 @@
     var [suggestions, setSuggestions]         = useState([]);
     var [showSugg, setShowSugg]               = useState(false);
     var [searchLoading, setSearchLoading]     = useState(false);
-    var [listening, setListening]             = useState(false);
-    var recRef = useRef(null);
     var [showSettings, setShowSettings]       = useState(false);
     var [showDiag, setShowDiag]               = useState(false);
     var [diagCopied, setDiagCopied]           = useState(false);
@@ -803,14 +879,7 @@
         setShowSugg(false);
         return;
       }
-      var lower = val.toLowerCase();
-      /* Match the carpark number and the address too, not only the name:
-         people look one up by whichever of those they happen to know. */
-      var matches = parksBase.filter(function(p) {
-        return p.name.toLowerCase().indexOf(lower) !== -1
-            || String(p.id) === lower
-            || (p.address || '').toLowerCase().indexOf(lower) !== -1;
-      }).slice(0, 8);
+      var matches = searchParks(parksBase, val, 8);
       setSuggestions(matches);
       setShowSugg(matches.length > 0);
     }, [parksBase]);
@@ -849,12 +918,9 @@
     var handleSearchSubmit = useCallback(function() {
       setShowSugg(false);
       if (!searchText.trim()) return;
-      var lower = searchText.toLowerCase();
-      var exact = parksBase.find(function(p) {
-        return p.name.toLowerCase().indexOf(lower) !== -1;
-      });
-      if (exact) {
-        handleSuggClick(exact);
+      var hits = searchParks(parksBase, searchText, 1);
+      if (hits.length) {
+        handleSuggClick(hits[0]);
         return;
       }
       setFocusParkId(null);
@@ -911,39 +977,6 @@
       fetchRealtime(false);
     }, [proxyInput, fetchRealtime]);
 
-    /* Voice search */
-    var startVoice = useCallback(function() {
-      var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) {
-        window.alert('您的瀏覽器不支援語音搜尋，請改用文字搜尋。');
-        return;
-      }
-      if (listening && recRef.current) {
-        recRef.current.stop();
-        return;
-      }
-      var rec = new SR();
-      rec.lang = 'zh-HK';
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-      rec.onstart = function() { setListening(true); };
-      rec.onresult = function(ev) {
-        var text = ev.results[0][0].transcript
-          .replace(/[，。！？、；：,.!?;:「」『』"'“”‘’\s]/g, '');
-        setSearchText(text);
-        handleSearchInput(text);
-      };
-      rec.onerror = function(ev) {
-        setListening(false);
-        if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') {
-          window.alert('無法使用麥克風，請允許權限或改用文字搜尋。');
-        }
-      };
-      rec.onend = function() { setListening(false); };
-      recRef.current = rec;
-      try { rec.start(); } catch (e) { setListening(false); }
-    }, [listening, handleSearchInput]);
-
     /* GPS */
     var handleFindParking = useCallback(function() {
       if (!navigator.geolocation) {
@@ -973,6 +1006,139 @@
       setRadius(1000);
       setSortBy('distance');
     }, []);
+
+    /* One carpark card. A plain render function rather than a component so
+       it can be dropped both under the search box and in the list without
+       remounting or duplicating the markup. */
+    function renderParkCard(park) {
+
+        var vs = getVehicleSpaces(park, vehicleType);
+        var isFull = vs === 0;
+        var noData = !park.spaces;
+        var navOpen = activeNavId === park.id;
+        var fi2 = feeInfo();
+
+        return (
+          <div key={park.id}
+            className={'bg-white rounded-2xl shadow-sm border overflow-hidden ' +
+              (isFull && !noData ? 'border-red-200' : 'border-gray-100')}>
+
+            {/* Card header */}
+            <div className={'px-4 pt-3 pb-2 flex items-start justify-between ' +
+              (isFull && !noData ? 'bg-red-50' : '')}>
+              <div className="flex-1 pr-2">
+                <h3 className="font-bold text-gray-800 text-base leading-snug">
+                  {park.name}
+                  {isFull && !noData && (
+                    <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full pulse-red">已滿</span>
+                  )}
+                  {noData && (
+                    <span className="ml-2 align-middle text-[10px] bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">離線</span>
+                  )}
+                </h3>
+                <div className="text-[11px] text-gray-400 mt-0.5">
+                  <i className="fa-solid fa-map-pin mr-1 text-emerald-500"></i>{park.region}
+                </div>
+              </div>
+              {park.distance !== null && (
+                <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
+                  {park.distance < 1000
+                    ? park.distance + 'm'
+                    : (park.distance / 1000).toFixed(1) + 'km'}
+                </div>
+              )}
+            </div>
+
+            {/* Spaces */}
+            <div className="px-4 pb-2">
+              {noData && (
+                <div className="text-[10px] text-orange-500 mb-1.5 flex items-center space-x-1">
+                  <i className="fa-solid fa-triangle-exclamation"></i>
+                  <span>即時車位數據未能讀取，顯示停車場總容量</span>
+                </div>
+              )}
+              <div className="grid grid-cols-4 gap-1.5">
+                {[
+                  { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? (park.capacity.light  || 0) : 0, sel:'light', ring:'ring-blue-300' },
+                  { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? (park.capacity.ev     || 0) : 0, sel:'ev',    ring:'ring-green-300' },
+                  { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? (park.capacity.moto   || 0) : 0, sel:'moto',  ring:'ring-orange-300' },
+                  { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? (park.capacity.heavy  || 0) : 0, sel:'all',   ring:'ring-slate-300' }
+                ].map(function(item) {
+                  var active = vehicleType === item.sel;
+                  var hasAvail = item.avail !== null && item.avail !== undefined;
+                  return (
+                    <div key={item.key}
+                      className={'rounded-lg p-1.5 text-center border ' +
+                        (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
+                      <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
+                      <div className="text-[9px] text-gray-400">{item.label}</div>
+                      {hasAvail ? (
+                        <div>
+                          <span className={'text-sm ' + spaceColor(item.avail, item.cap)}>{item.avail}</span>
+                          <span className="text-[9px] text-gray-400">/{item.cap}</span>
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="text-xs text-gray-300">---</span>
+                          <span className="text-[9px] text-gray-400">/{item.cap}</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Info */}
+            <div className="mx-4 mb-2 bg-gray-50 rounded-xl p-2.5 text-xs text-gray-600 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center space-x-1">
+                  <i className="fa-solid fa-dollar-sign text-emerald-600"></i>
+                  <span>現時收費</span>
+                  <span className="text-[10px] text-gray-400">({fi2.label})</span>
+                </span>
+                <span className="font-bold text-emerald-700 text-base">${fi2.fee}<span className="text-[10px] font-normal text-gray-500">/小時</span></span>
+              </div>
+              <div className="flex items-center space-x-1 text-[11px]">
+                <i className="fa-solid fa-location-dot text-blue-400"></i>
+                <span className="text-gray-500">{park.address}</span>
+              </div>
+              {park.phone && (
+                <div className="flex items-center space-x-1 text-[11px]">
+                  <i className="fa-solid fa-phone text-orange-400"></i>
+                  <span className="text-gray-500">{park.phone}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Navigation */}
+            <div className="px-4 pb-3">
+              <button onClick={function(){ setActiveNavId(navOpen ? null : park.id); }}
+                className="w-full flex items-center justify-center space-x-2 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium hover:bg-emerald-100 transition-colors">
+                <i className="fa-solid fa-diamond-turn-right"></i>
+                <span>前往停車場</span>
+                <i className={'fa-solid fa-chevron-' + (navOpen ? 'up' : 'down') + ' text-xs'}></i>
+              </button>
+              {navOpen && (
+                <div className="flex space-x-2 mt-2">
+                  <button onClick={function(){ openMap('google', park.lat, park.lng, park.name); }}
+                    className="flex-1 py-2.5 bg-blue-50 text-blue-700 rounded-xl text-xs font-semibold hover:bg-blue-100 transition-colors flex flex-col items-center">
+                    <i className="fa-brands fa-google mb-0.5"></i>Google Maps
+                  </button>
+                  <button onClick={function(){ openMap('apple', park.lat, park.lng, park.name); }}
+                    className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-200 transition-colors flex flex-col items-center">
+                    <i className="fa-brands fa-apple mb-0.5"></i>Apple Maps
+                  </button>
+                  <button onClick={function(){ openMap('amap', park.lat, park.lng, park.name); }}
+                    className="flex-1 py-2.5 bg-sky-50 text-sky-700 rounded-xl text-xs font-semibold hover:bg-sky-100 transition-colors flex flex-col items-center">
+                    <i className="fa-solid fa-map mb-0.5"></i>高德地圖
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+    }
 
     /* displayed list */
     var mergedParks = useMemo(function() {
@@ -1230,22 +1396,11 @@
                         <i className="fa-solid fa-xmark"></i>
                       </button>
                     : null}
-                <button onClick={startVoice}
-                  title="語音搜尋"
-                  className={'px-3 py-2.5 transition-colors ' +
-                    (listening ? 'bg-red-500 text-white pulse-red' : 'text-gray-400 hover:text-emerald-600')}>
-                  <i className="fa-solid fa-microphone"></i>
-                </button>
                 <button onClick={handleSearchSubmit}
                   className="bg-emerald-600 text-white px-3 py-2.5 text-sm hover:bg-emerald-700 transition-colors">
                   搜尋
                 </button>
               </div>
-              {listening && (
-                <p className="mt-1 text-[11px] text-red-500">
-                  <i className="fa-solid fa-circle-dot mr-1 text-[8px]"></i>正在聆聽…請說出停車場名稱
-                </p>
-              )}
               {showSugg && suggestions.length > 0 && (
                 <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
                   {suggestions.map(function(s) {
@@ -1267,6 +1422,44 @@
               )}
             </div>
 
+            {/* The carpark just looked up, right under the box it was typed
+                into: it used to render at the bottom of the list, below the
+                location button, the filters and the totals bar, so finding
+                one meant scrolling past all of that to read it. */}
+            {focusParkId !== null && (
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-bold text-blue-800 flex items-center min-w-0">
+                    <i className="fa-solid fa-magnifying-glass-location mr-2 shrink-0"></i>
+                    <span className="truncate">
+                      {focusedPark ? '查詢結果' : '搵唔到呢個停車場'}
+                    </span>
+                  </span>
+                  <button onClick={clearFocus}
+                    className="ml-2 shrink-0 text-[11px] text-blue-700 underline hover:text-blue-900">
+                    <i className="fa-solid fa-list-ul mr-1"></i>返回全部停車場
+                  </button>
+                </div>
+
+                {focusedPark ? (
+                  <div>
+                    {renderParkCard(focusedPark)}
+                    <button onClick={function(){ handleCentreOnPark(focusedPark); }}
+                      className="mt-2 w-full py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors">
+                      <i className="fa-solid fa-location-dot mr-1"></i>睇吓呢個停車場附近仲有咩
+                    </button>
+                  </div>
+                ) : (
+                  <div className="text-center text-gray-400 py-8 bg-gray-50 rounded-2xl">
+                    <i className="fa-solid fa-square-parking text-3xl mb-2 block text-gray-200"></i>
+                    <p className="text-sm">搵唔到呢個停車場</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {focusParkId === null && (
+            <React.Fragment>
             {/* GPS button */}
             <button onClick={handleFindParking}
               className="w-full flex items-center justify-center space-x-3 bg-emerald-500 text-white py-3 px-4 rounded-2xl shadow-md shadow-emerald-200 hover:bg-emerald-600 active:scale-95 transition-all mb-4">
@@ -1366,9 +1559,12 @@
                 })}
               </div>
             </div>
+            </React.Fragment>
+            )}
           </div>
 
           {/* ── Region Stats Bar ── */}
+          {focusParkId === null && (
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-emerald-100">
             <div className="flex justify-between items-center mb-1.5">
               <span className="text-xs font-bold text-emerald-800">{selectedRegion} ({regionStats.count}個停車場)</span>
@@ -1400,36 +1596,14 @@
               })}
             </div>
           </div>
+          )}
 
           {/* ── Park List ── */}
+          {focusParkId === null && (
           <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
 
-            {/* Looking up one carpark */}
-            {focusParkId !== null && (
-              <div className="mx-4 mt-3 rounded-xl bg-blue-50 border border-blue-200 px-3 py-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-blue-800 flex items-center min-w-0">
-                    <i className="fa-solid fa-magnifying-glass-location mr-2 shrink-0"></i>
-                    <span className="truncate">
-                      {focusedPark ? '只顯示：' + focusedPark.name : '搵唔到呢個停車場'}
-                    </span>
-                  </span>
-                  <button onClick={clearFocus}
-                    className="ml-2 shrink-0 text-[11px] text-blue-700 underline hover:text-blue-900">
-                    顯示全部
-                  </button>
-                </div>
-                {focusedPark && (
-                  <button onClick={function(){ handleCentreOnPark(focusedPark); }}
-                    className="mt-2 w-full py-1.5 rounded-lg bg-white border border-blue-300 text-blue-700 text-[11px] font-medium hover:bg-blue-100 transition-colors">
-                    <i className="fa-solid fa-location-dot mr-1"></i>睇吓呢個停車場附近仲有咩
-                  </button>
-                )}
-              </div>
-            )}
-
             {/* 距離最近 needs a location to sort by */}
-            {focusParkId === null && sortBy === 'distance' && !userLocation && (
+            {sortBy === 'distance' && !userLocation && (
               <div className="mx-4 mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 flex items-start">
                 <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
                 <span>未知你喺邊，暫時排唔到距離。㩒上面「搵車位」開定位，或者搜尋一個地標。</span>
@@ -1438,11 +1612,9 @@
 
             <div className="px-4 py-2 flex justify-between items-center">
               <span className="text-xs text-gray-500">
-                {focusParkId !== null
-                  ? '個別停車場'
-                  : (userLocation && radius !== Infinity
-                      ? '找到 ' + displayedParks.length + ' 個停車場'
-                      : '列出 ' + displayedParks.length + ' 個停車場')}
+                {userLocation && radius !== Infinity
+                  ? '找到 ' + displayedParks.length + ' 個停車場'
+                  : '列出 ' + displayedParks.length + ' 個停車場'}
               </span>
               {realtimeArr.length > 0 && (
                 <span className="text-[10px] text-gray-400">
@@ -1453,134 +1625,7 @@
             </div>
 
             <div className="px-4 space-y-3 pb-4">
-              {displayedParks.map(function(park) {
-                var vs = getVehicleSpaces(park, vehicleType);
-                var isFull = vs === 0;
-                var noData = !park.spaces;
-                var navOpen = activeNavId === park.id;
-                var fi2 = feeInfo();
-
-                return (
-                  <div key={park.id}
-                    className={'bg-white rounded-2xl shadow-sm border overflow-hidden ' +
-                      (isFull && !noData ? 'border-red-200' : 'border-gray-100')}>
-
-                    {/* Card header */}
-                    <div className={'px-4 pt-3 pb-2 flex items-start justify-between ' +
-                      (isFull && !noData ? 'bg-red-50' : '')}>
-                      <div className="flex-1 pr-2">
-                        <h3 className="font-bold text-gray-800 text-base leading-snug">
-                          {park.name}
-                          {isFull && !noData && (
-                            <span className="ml-2 align-middle text-[10px] bg-red-100 text-red-600 px-2 py-0.5 rounded-full pulse-red">已滿</span>
-                          )}
-                          {noData && (
-                            <span className="ml-2 align-middle text-[10px] bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">離線</span>
-                          )}
-                        </h3>
-                        <div className="text-[11px] text-gray-400 mt-0.5">
-                          <i className="fa-solid fa-map-pin mr-1 text-emerald-500"></i>{park.region}
-                        </div>
-                      </div>
-                      {park.distance !== null && (
-                        <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
-                          {park.distance < 1000
-                            ? park.distance + 'm'
-                            : (park.distance / 1000).toFixed(1) + 'km'}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Spaces */}
-                    <div className="px-4 pb-2">
-                      {noData && (
-                        <div className="text-[10px] text-orange-500 mb-1.5 flex items-center space-x-1">
-                          <i className="fa-solid fa-triangle-exclamation"></i>
-                          <span>即時車位數據未能讀取，顯示停車場總容量</span>
-                        </div>
-                      )}
-                      <div className="grid grid-cols-4 gap-1.5">
-                        {[
-                          { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? (park.capacity.light  || 0) : 0, sel:'light', ring:'ring-blue-300' },
-                          { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? (park.capacity.ev     || 0) : 0, sel:'ev',    ring:'ring-green-300' },
-                          { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? (park.capacity.moto   || 0) : 0, sel:'moto',  ring:'ring-orange-300' },
-                          { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? (park.capacity.heavy  || 0) : 0, sel:'all',   ring:'ring-slate-300' }
-                        ].map(function(item) {
-                          var active = vehicleType === item.sel;
-                          var hasAvail = item.avail !== null && item.avail !== undefined;
-                          return (
-                            <div key={item.key}
-                              className={'rounded-lg p-1.5 text-center border ' +
-                                (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
-                              <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
-                              <div className="text-[9px] text-gray-400">{item.label}</div>
-                              {hasAvail ? (
-                                <div>
-                                  <span className={'text-sm ' + spaceColor(item.avail, item.cap)}>{item.avail}</span>
-                                  <span className="text-[9px] text-gray-400">/{item.cap}</span>
-                                </div>
-                              ) : (
-                                <div>
-                                  <span className="text-xs text-gray-300">---</span>
-                                  <span className="text-[9px] text-gray-400">/{item.cap}</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-
-                    {/* Info */}
-                    <div className="mx-4 mb-2 bg-gray-50 rounded-xl p-2.5 text-xs text-gray-600 space-y-1">
-                      <div className="flex items-center justify-between">
-                        <span className="flex items-center space-x-1">
-                          <i className="fa-solid fa-dollar-sign text-emerald-600"></i>
-                          <span>現時收費</span>
-                          <span className="text-[10px] text-gray-400">({fi2.label})</span>
-                        </span>
-                        <span className="font-bold text-emerald-700 text-base">${fi2.fee}<span className="text-[10px] font-normal text-gray-500">/小時</span></span>
-                      </div>
-                      <div className="flex items-center space-x-1 text-[11px]">
-                        <i className="fa-solid fa-location-dot text-blue-400"></i>
-                        <span className="text-gray-500">{park.address}</span>
-                      </div>
-                      {park.phone && (
-                        <div className="flex items-center space-x-1 text-[11px]">
-                          <i className="fa-solid fa-phone text-orange-400"></i>
-                          <span className="text-gray-500">{park.phone}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Navigation */}
-                    <div className="px-4 pb-3">
-                      <button onClick={function(){ setActiveNavId(navOpen ? null : park.id); }}
-                        className="w-full flex items-center justify-center space-x-2 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium hover:bg-emerald-100 transition-colors">
-                        <i className="fa-solid fa-diamond-turn-right"></i>
-                        <span>前往停車場</span>
-                        <i className={'fa-solid fa-chevron-' + (navOpen ? 'up' : 'down') + ' text-xs'}></i>
-                      </button>
-                      {navOpen && (
-                        <div className="flex space-x-2 mt-2">
-                          <button onClick={function(){ openMap('google', park.lat, park.lng, park.name); }}
-                            className="flex-1 py-2.5 bg-blue-50 text-blue-700 rounded-xl text-xs font-semibold hover:bg-blue-100 transition-colors flex flex-col items-center">
-                            <i className="fa-brands fa-google mb-0.5"></i>Google Maps
-                          </button>
-                          <button onClick={function(){ openMap('apple', park.lat, park.lng, park.name); }}
-                            className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl text-xs font-semibold hover:bg-gray-200 transition-colors flex flex-col items-center">
-                            <i className="fa-brands fa-apple mb-0.5"></i>Apple Maps
-                          </button>
-                          <button onClick={function(){ openMap('amap', park.lat, park.lng, park.name); }}
-                            className="flex-1 py-2.5 bg-sky-50 text-sky-700 rounded-xl text-xs font-semibold hover:bg-sky-100 transition-colors flex flex-col items-center">
-                            <i className="fa-solid fa-map mb-0.5"></i>高德地圖
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
+              {displayedParks.map(renderParkCard)}
 
               {displayedParks.length === 0 && !rtLoading && (
                 <div className="text-center text-gray-400 py-16">
@@ -1591,6 +1636,7 @@
               )}
             </div>
           </div>
+          )}
 
           {/* ── Mock location FAB ── */}
           <button onClick={handleMockLocation}
