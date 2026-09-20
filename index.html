@@ -36,100 +36,51 @@
   const REALTIME_INTERVAL = 30000;
   const FETCH_TIMEOUT = 8000;
 
-  /* ─── Static fallback DB (77 parks) ─── */
-  const BUILTIN_DB = [
-    // 中區 / 荷蘭園 / 雀仔園
-    { id:'1',  name:'華士古達嘉馬花園停車場', region:'中區 / 荷蘭園 / 雀仔園', lat:22.1963, lng:113.5461, phone:'2833 7676', address:'東望洋街',             capacity:{light:170,  ev:10, moto:100, heavy:0} },
-    { id:'2',  name:'塔石體育館停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1984, lng:113.5456, phone:'2852 5684', address:'東望洋街塔石體育館',   capacity:{light:150,  ev:5,  moto:50,  heavy:0} },
-    { id:'3',  name:'松山行人隧道停車場',     region:'中區 / 荷蘭園 / 雀仔園', lat:22.1978, lng:113.5489, phone:'2852 3311', address:'羅理基博士大馬路',     capacity:{light:200,  ev:10, moto:80,  heavy:0} },
-    { id:'4',  name:'亞馬喇前地停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1897, lng:113.5434, phone:'2871 1818', address:'亞馬喇前地地庫',       capacity:{light:800,  ev:20, moto:300, heavy:0} },
-    { id:'53', name:'交通事務局大樓停車場',   region:'中區 / 荷蘭園 / 雀仔園', lat:22.2030, lng:113.5480, phone:'8866 6363', address:'馬交石炮台馬路',       capacity:{light:100,  ev:2,  moto:50,  heavy:0} },
-    { id:'54', name:'栢威停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1950, lng:113.5450, phone:'2833 0011', address:'賈伯樂提督街',         capacity:{light:150,  ev:0,  moto:60,  heavy:0} },
-    { id:'56', name:'栢蕙停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1990, lng:113.5490, phone:'2833 0033', address:'荷蘭園大馬路',         capacity:{light:200,  ev:0,  moto:100, heavy:0} },
-    { id:'65', name:'麗都停車場',             region:'中區 / 荷蘭園 / 雀仔園', lat:22.1980, lng:113.5430, phone:'2833 0044', address:'沙梨頭',               capacity:{light:120,  ev:0,  moto:50,  heavy:0} },
-    { id:'77', name:'南灣(栢湖)停車場',       region:'中區 / 荷蘭園 / 雀仔園', lat:22.1880, lng:113.5400, phone:'2871 3333', address:'南灣',                 capacity:{light:400,  ev:10, moto:150, heavy:0} },
-    // 新口岸 / 皇朝
-    { id:'5',  name:'栢佳停車場',             region:'新口岸 / 皇朝', lat:22.1922, lng:113.5401, phone:'2871 2345', address:'南灣大馬路',                   capacity:{light:200,  ev:5,  moto:80,  heavy:0} },
-    { id:'6',  name:'何賢公園停車場',         region:'新口岸 / 皇朝', lat:22.1901, lng:113.5485, phone:'2870 1122', address:'宋玉生廣場何賢公園',           capacity:{light:300,  ev:10, moto:150, heavy:0} },
-    { id:'7',  name:'藝園停車場',             region:'新口岸 / 皇朝', lat:22.1888, lng:113.5492, phone:'2870 2233', address:'宋玉生廣場藝園',               capacity:{light:250,  ev:5,  moto:120, heavy:0} },
-    { id:'8',  name:'栢嘉停車場',             region:'新口岸 / 皇朝', lat:22.1873, lng:113.5492, phone:'2872 2911', address:'宋玉生廣場',                   capacity:{light:300,  ev:5,  moto:100, heavy:0} },
-    { id:'9',  name:'栢寧停車場',             region:'新口岸 / 皇朝', lat:22.1932, lng:113.5465, phone:'2856 8388', address:'馬六甲街',                     capacity:{light:500,  ev:0,  moto:80,  heavy:0} },
-    { id:'10', name:'科學館公共停車場',       region:'新口岸 / 皇朝', lat:22.1865, lng:113.5552, phone:'2888 0822', address:'孫逸仙大馬路',                 capacity:{light:400,  ev:10, moto:100, heavy:0} },
-    { id:'11', name:'栢樂停車場',             region:'新口岸 / 皇朝', lat:22.1965, lng:113.5555, phone:'2872 8899', address:'外港客運碼頭',                 capacity:{light:600,  ev:0,  moto:150, heavy:0} },
-    { id:'12', name:'栢健停車場',             region:'新口岸 / 皇朝', lat:22.1925, lng:113.5510, phone:'2871 3344', address:'羅理基博士大馬路',             capacity:{light:180,  ev:2,  moto:60,  heavy:0} },
-    { id:'13', name:'觀音像海濱休憩區停車場', region:'新口岸 / 皇朝', lat:22.1850, lng:113.5510, phone:'2833 3322', address:'孫逸仙大馬路',                 capacity:{light:150,  ev:5,  moto:50,  heavy:0} },
-    { id:'62', name:'澳門文化中心停車場',     region:'新口岸 / 皇朝', lat:22.1868, lng:113.5535, phone:'2888 0823', address:'孫逸仙大馬路',                 capacity:{light:200,  ev:0,  moto:50,  heavy:0} },
-    // 下環 / 內港 / 新馬路
-    { id:'14', name:'栢港停車場',             region:'下環 / 內港 / 新馬路', lat:22.1966, lng:113.5369, phone:'2893 9168', address:'爹美刁施拿地大馬路',   capacity:{light:250,  ev:2,  moto:150, heavy:0} },
-    { id:'15', name:'媽閣交通樞紐停車場',     region:'下環 / 內港 / 新馬路', lat:22.1861, lng:113.5312, phone:'2896 9988', address:'媽閣',                 capacity:{light:400,  ev:20, moto:200, heavy:50} },
-    { id:'16', name:'下環街市停車場',         region:'下環 / 內港 / 新馬路', lat:22.1885, lng:113.5335, phone:'2893 3311', address:'李加祿街',             capacity:{light:120,  ev:0,  moto:80,  heavy:0} },
-    { id:'17', name:'李加祿街停車場',         region:'下環 / 內港 / 新馬路', lat:22.1890, lng:113.5340, phone:'2893 3322', address:'李加祿街',             capacity:{light:80,   ev:0,  moto:50,  heavy:0} },
-    // 筷子基 / 青洲 / 西北區
-    { id:'18', name:'快達樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2081, lng:113.5434, phone:'2822 1111', address:'筷子基',             capacity:{light:400,  ev:10, moto:200, heavy:0} },
-    { id:'19', name:'快富樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2090, lng:113.5420, phone:'2822 2222', address:'筷子基',             capacity:{light:300,  ev:5,  moto:150, heavy:0} },
-    { id:'20', name:'快意樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2075, lng:113.5415, phone:'2822 3333', address:'筷子基',             capacity:{light:250,  ev:5,  moto:120, heavy:0} },
-    { id:'21', name:'青茂口岸停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2135, lng:113.5430, phone:'2823 4444', address:'青洲',               capacity:{light:500,  ev:20, moto:300, heavy:0} },
-    { id:'22', name:'青葱大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2120, lng:113.5410, phone:'2823 5555', address:'青洲',               capacity:{light:300,  ev:5,  moto:150, heavy:0} },
-    { id:'23', name:'青怡大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2110, lng:113.5425, phone:'2823 6666', address:'青洲',               capacity:{light:280,  ev:5,  moto:140, heavy:0} },
-    { id:'24', name:'青泉陣停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2140, lng:113.5440, phone:'2823 7777', address:'青洲',               capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
-    { id:'63', name:'澳門新批發市場停車場',   region:'筷子基 / 青洲 / 西北區', lat:22.2138, lng:113.5415, phone:'2823 4445', address:'青洲',               capacity:{light:300,  ev:0,  moto:150, heavy:100} },
-    { id:'66', name:'海灣南街停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2050, lng:113.5400, phone:'2822 4444', address:'沙梨頭',             capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
-    { id:'67', name:'沙梨頭街市停車場',       region:'筷子基 / 青洲 / 西北區', lat:22.1990, lng:113.5380, phone:'2822 5555', address:'爹美刁施拿地大馬路', capacity:{light:100,  ev:0,  moto:120, heavy:0} },
-    { id:'75', name:'快盈大廈停車場',         region:'筷子基 / 青洲 / 西北區', lat:22.2060, lng:113.5420, phone:'2822 6666', address:'筷子基',             capacity:{light:120,  ev:0,  moto:60,  heavy:0} },
-    { id:'76', name:'青翠樓停車場',           region:'筷子基 / 青洲 / 西北區', lat:22.2130, lng:113.5420, phone:'2823 8888', address:'青洲',               capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
-    // 北區 / 黑沙環
-    { id:'25', name:'祐漢公園停車場',         region:'北區 / 黑沙環', lat:22.2115, lng:113.5495, phone:'2848 1111', address:'祐漢',                       capacity:{light:300,  ev:5,  moto:100, heavy:0} },
-    { id:'26', name:'望廈體育中心停車場',     region:'北區 / 黑沙環', lat:22.2065, lng:113.5480, phone:'2848 2222', address:'望廈',                       capacity:{light:450,  ev:10, moto:200, heavy:0} },
-    { id:'27', name:'望善樓停車場',           region:'北區 / 黑沙環', lat:22.2055, lng:113.5490, phone:'2848 3333', address:'望廈',                       capacity:{light:200,  ev:5,  moto:100, heavy:0} },
-    { id:'28', name:'望賢樓停車場',           region:'北區 / 黑沙環', lat:22.2045, lng:113.5485, phone:'2848 4444', address:'望廈',                       capacity:{light:180,  ev:5,  moto:80,  heavy:0} },
-    { id:'29', name:'東北大馬路長者公寓停車場',region:'北區 / 黑沙環', lat:22.2130, lng:113.5550, phone:'2848 5555', address:'黑沙環',                     capacity:{light:350,  ev:10, moto:150, heavy:0} },
-    { id:'30', name:'永寧街停車場',           region:'北區 / 黑沙環', lat:22.2140, lng:113.5520, phone:'2848 6666', address:'黑沙環',                     capacity:{light:250,  ev:0,  moto:120, heavy:0} },
-    { id:'31', name:'黑沙環公園停車場',       region:'北區 / 黑沙環', lat:22.2125, lng:113.5560, phone:'2848 7777', address:'黑沙環',                     capacity:{light:200,  ev:0,  moto:100, heavy:0} },
-    { id:'55', name:'栢麗停車場',             region:'北區 / 黑沙環', lat:22.2020, lng:113.5470, phone:'2833 0022', address:'俾利喇街',                   capacity:{light:180,  ev:0,  moto:80,  heavy:0} },
-    { id:'59', name:'信達廣場停車場',         region:'北區 / 黑沙環', lat:22.2100, lng:113.5500, phone:'2848 0066', address:'黑沙環馬場大馬路',           capacity:{light:200,  ev:0,  moto:100, heavy:0} },
-    { id:'60', name:'關閘綜合體育場館停車場', region:'北區 / 黑沙環', lat:22.2150, lng:113.5480, phone:'2848 0077', address:'關閘馬路',                   capacity:{light:300,  ev:10, moto:150, heavy:0} },
-    { id:'61', name:'望德樓停車場',           region:'北區 / 黑沙環', lat:22.2060, lng:113.5490, phone:'2848 1112', address:'望廈',                       capacity:{light:150,  ev:0,  moto:100, heavy:0} },
-    { id:'64', name:'污水處理站停車場',       region:'北區 / 黑沙環', lat:22.2160, lng:113.5570, phone:'2848 7778', address:'黑沙環',                     capacity:{light:100,  ev:0,  moto:0,   heavy:200} },
-    // 港珠澳大橋
-    { id:'32', name:'港珠澳大橋邊檢大樓西停車場', region:'港珠澳大橋', lat:22.2180, lng:113.5700, phone:'2848 8888', address:'港珠澳大橋人工島', capacity:{light:3000, ev:50, moto:0, heavy:0} },
-    { id:'33', name:'港珠澳大橋邊檢大樓東停車場', region:'港珠澳大橋', lat:22.2190, lng:113.5720, phone:'2848 9999', address:'港珠澳大橋人工島', capacity:{light:3000, ev:50, moto:0, heavy:0} },
-    // 氹仔區
-    { id:'34', name:'中央公園停車場 (氹仔)', region:'氹仔區', lat:22.1556, lng:113.5543, phone:'2885 1234', address:'氹仔哥英布拉街',       capacity:{light:1000, ev:50, moto:400, heavy:0} },
-    { id:'35', name:'氹仔客運碼頭停車場',    region:'氹仔區', lat:22.1620, lng:113.5760, phone:'2885 2222', address:'氹仔客運碼頭',         capacity:{light:800,  ev:20, moto:300, heavy:0} },
-    { id:'36', name:'湖畔大廈停車場',        region:'氹仔區', lat:22.1610, lng:113.5580, phone:'2885 3333', address:'氹仔湖畔大廈',         capacity:{light:600,  ev:10, moto:200, heavy:0} },
-    { id:'37', name:'松樹尾停車場',          region:'氹仔區', lat:22.1520, lng:113.5530, phone:'2885 4444', address:'氹仔松樹尾',           capacity:{light:250,  ev:5,  moto:100, heavy:0} },
-    { id:'38', name:'黑橋街停車場',          region:'氹仔區', lat:22.1530, lng:113.5520, phone:'2885 5555', address:'氹仔黑橋街',           capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
-    { id:'39', name:'運動場停車場',          region:'氹仔區', lat:22.1535, lng:113.5480, phone:'2885 6666', address:'氹仔運動場',           capacity:{light:300,  ev:10, moto:150, heavy:0} },
-    { id:'40', name:'日昇樓停車場',          region:'氹仔區', lat:22.1630, lng:113.5620, phone:'2885 7777', address:'氹仔日昇樓',           capacity:{light:400,  ev:10, moto:180, heavy:0} },
-    { id:'41', name:'泉福新邨停車場',        region:'氹仔區', lat:22.1540, lng:113.5550, phone:'2885 8888', address:'氹仔泉福',             capacity:{light:200,  ev:5,  moto:100, heavy:0} },
-    { id:'57', name:'華寶花園停車場',        region:'氹仔區', lat:22.1560, lng:113.5510, phone:'2885 0044', address:'氹仔布拉干薩街',       capacity:{light:120,  ev:0,  moto:50,  heavy:0} },
-    { id:'58', name:'南新花園停車場',        region:'氹仔區', lat:22.1580, lng:113.5500, phone:'2885 0055', address:'氹仔廣東大馬路',       capacity:{light:150,  ev:0,  moto:60,  heavy:0} },
-    { id:'68', name:'日暉大廈停車場',        region:'氹仔區', lat:22.1640, lng:113.5630, phone:'2885 8889', address:'氹仔',                 capacity:{light:150,  ev:0,  moto:50,  heavy:0} },
-    { id:'70', name:'柯維納馬路重型客車停車場', region:'氹仔區', lat:22.1525, lng:113.5490, phone:'2885 6667', address:'氹仔柯維納馬路',   capacity:{light:0,    ev:0,  moto:0,   heavy:100} },
-    { id:'73', name:'機場南停車場',          region:'氹仔區', lat:22.1450, lng:113.5750, phone:'2886 1111', address:'澳門國際機場',         capacity:{light:300,  ev:0,  moto:0,   heavy:0} },
-    { id:'74', name:'機場北停車場',          region:'氹仔區', lat:22.1500, lng:113.5750, phone:'2886 2222', address:'澳門國際機場',         capacity:{light:300,  ev:0,  moto:0,   heavy:0} },
-    // 路氹 / 澳大
-    { id:'42', name:'澳大P1停車場',          region:'路氹 / 澳大', lat:22.1330, lng:113.5420, phone:'2888 1111', address:'橫琴澳大校區',   capacity:{light:300,  ev:10, moto:100, heavy:0} },
-    { id:'43', name:'澳大P3停車場',          region:'路氹 / 澳大', lat:22.1310, lng:113.5460, phone:'2888 2222', address:'橫琴澳大校區',   capacity:{light:350,  ev:10, moto:120, heavy:0} },
-    { id:'44', name:'澳大P5停車場',          region:'路氹 / 澳大', lat:22.1350, lng:113.5450, phone:'2888 3333', address:'橫琴澳大校區',   capacity:{light:280,  ev:5,  moto:80,  heavy:0} },
-    { id:'45', name:'離島醫院公共停車場',    region:'路氹 / 澳大', lat:22.1400, lng:113.5580, phone:'2888 4444', address:'路氹連貫公路',   capacity:{light:500,  ev:20, moto:200, heavy:0} },
-    { id:'71', name:'澳大P6停車場',          region:'路氹 / 澳大', lat:22.1320, lng:113.5470, phone:'2888 4445', address:'橫琴澳大校區',   capacity:{light:200,  ev:5,  moto:80,  heavy:0} },
-    { id:'72', name:'澳大P1A停車場',         region:'路氹 / 澳大', lat:22.1340, lng:113.5410, phone:'2888 1112', address:'橫琴澳大校區',   capacity:{light:150,  ev:0,  moto:50,  heavy:0} },
-    // 路環區
-    { id:'46', name:'和諧廣場停車場',        region:'路環區', lat:22.1384, lng:113.5567, phone:'2888 2222', address:'路環石排灣',           capacity:{light:600,  ev:20, moto:300, heavy:0} },
-    { id:'47', name:'石排灣居雅大廈停車場',  region:'路環區', lat:22.1390, lng:113.5580, phone:'2888 5555', address:'路環石排灣',           capacity:{light:400,  ev:10, moto:150, heavy:0} },
-    { id:'48', name:'石排灣業興大廈停車場',  region:'路環區', lat:22.1375, lng:113.5590, phone:'2888 6666', address:'路環石排灣',           capacity:{light:350,  ev:10, moto:120, heavy:0} },
-    { id:'49', name:'石排灣樂群樓停車場',    region:'路環區', lat:22.1380, lng:113.5575, phone:'2888 7777', address:'路環石排灣',           capacity:{light:450,  ev:15, moto:180, heavy:0} },
-    { id:'50', name:'蝴蝶谷大馬路總站停車場',region:'路環區', lat:22.1360, lng:113.5560, phone:'2888 8888', address:'路環石排灣',           capacity:{light:250,  ev:5,  moto:100, heavy:0} },
-    { id:'51', name:'聯生工業邨停車場',      region:'路環區', lat:22.1320, lng:113.5540, phone:'2888 9999', address:'路環聯生',             capacity:{light:300,  ev:5,  moto:100, heavy:0} },
-    { id:'52', name:'黑沙海灘公園停車場',    region:'路環區', lat:22.1180, lng:113.5700, phone:'2888 0000', address:'路環黑沙',             capacity:{light:150,  ev:0,  moto:80,  heavy:0} },
-    { id:'69', name:'聯生圓形地停車場',      region:'路環區', lat:22.1330, lng:113.5530, phone:'2888 9998', address:'路環',                 capacity:{light:100,  ev:0,  moto:50,  heavy:0} }
-  ];
+  /* ─── Where the carpark list comes from ──────────────────────────────
+     Nowhere in this file. The list is fetched from the DSAT open-data API
+     (data.gov.mo) and cached in localStorage.
 
-  const REGIONS = [
-    '全部','北區 / 黑沙環','筷子基 / 青洲 / 西北區','中區 / 荷蘭園 / 雀仔園',
-    '新口岸 / 皇朝','下環 / 內港 / 新馬路','氹仔區','路氹 / 澳大','路環區','港珠澳大橋'
-  ];
+     This used to be a hand-written table of 77 carparks, and it was not
+     real: 41 of its 77 phone numbers ended in a repeated digit (2885 5555,
+     2888 1111…), 66 of 77 light-vehicle capacities were exact multiples of
+     50, the ids ran 1–77 with no gaps, and it listed carparks that do not
+     exist in Macau — 栢健停車場 among them. Motorcycle counts were wrong
+     throughout. Generated placeholder data presented as fact is worse than
+     no data at all in a tool people use to decide where to drive, so it is
+     gone rather than corrected.
+
+     Sourcing the list from the API also means carparks DSAT adds later —
+     the recent temporary outdoor ones, for instance — appear on their own,
+     with no release needed here. */
+
+  /* Geographic zones derived from each carpark's coordinates. These are
+     island/peninsula zones, not official parish (堂區) boundaries: the
+     thresholds fall in the water between them, so the assignment is
+     unambiguous without inventing an administrative label the data does
+     not carry. */
+  function zoneOf(park) {
+    var name = (park.name || '') + (park.address || '');
+    if (name.indexOf('港珠澳大橋') !== -1) return '港珠澳大橋';
+    var lat = park.lat;
+    if (!lat) return '未分區';
+    if (lat >= 22.175) return '澳門半島';
+    if (lat >= 22.148) return '氹仔';
+    if (lat >= 22.128) return '路氹城';
+    return '路環';
+  }
+
+  var ZONE_ORDER = ['澳門半島', '氹仔', '路氹城', '路環', '港珠澳大橋', '未分區'];
+
+  /* The filter offers only the zones the fetched data actually contains. */
+  function zonesPresent(parks) {
+    var seen = {};
+    for (var i = 0; i < parks.length; i++) seen[parks[i].region] = true;
+    var out = ['全部'];
+    for (var j = 0; j < ZONE_ORDER.length; j++) {
+      if (seen[ZONE_ORDER[j]]) out.push(ZONE_ORDER[j]);
+    }
+    return out;
+  }
 
   /* ─── Utility ─── */
   function calcDistance(lat1, lon1, lat2, lon2) {
@@ -275,17 +226,20 @@
       var phone   = getVal(el, ['PHONE', 'TEL']);
       var pos     = macauCoords(toFloat(getVal(el, ['X_coords', 'LONGITUDE', 'LNG'])),
                                 toFloat(getVal(el, ['Y_coords', 'LATITUDE', 'LAT'])));
-      var tLight  = toInt(getVal(el, ['TOTAL_CAR', 'CAR_CAPACITY', 'TOTAL_LIGHT']));
-      var tMoto   = toInt(getVal(el, ['TOTAL_MOTO', 'MOTO_CAPACITY']));
-      var tEv     = toInt(getVal(el, ['TOTAL_EV', 'EV_CAPACITY']));
-      var tHeavy  = toInt(getVal(el, ['TOTAL_HEAVY', 'HEAVY_CAPACITY']));
-      /* Coordinates are optional: a record without usable ones still carries
-         a name, address and capacity worth syncing, and the built-in
-         coordinates stay in place for it. */
+      /* Capacity is null when the feed does not publish it, so the card can
+         show a count on its own instead of claiming a total of zero. */
+      var cap = {
+        light: toCount(getVal(el, ['TOTAL_CAR', 'CAR_CAPACITY', 'TOTAL_LIGHT'])),
+        moto:  toCount(getVal(el, ['TOTAL_MOTO', 'TOTAL_MB', 'MOTO_CAPACITY'])),
+        ev:    toCount(getVal(el, ['TOTAL_EV', 'EV_CAPACITY'])),
+        heavy: toCount(getVal(el, ['TOTAL_HEAVY', 'HEAVY_CAPACITY']))
+      };
       if (cname || no) {
-        result.push({ id: no, name: cname, address: addr, phone: phone,
-          lat: pos ? pos.lat : 0, lng: pos ? pos.lng : 0,
-          capacity: { light: tLight, moto: tMoto, ev: tEv, heavy: tHeavy } });
+        var park = { id: no, name: cname || ('停車場 ' + no),
+          address: addr, phone: phone,
+          lat: pos ? pos.lat : 0, lng: pos ? pos.lng : 0, capacity: cap };
+        park.region = zoneOf(park);
+        result.push(park);
       }
     }
     return result;
@@ -726,7 +680,9 @@
     var storedTs = loadBaseSyncTs();
     var syncOld = storedTs && (Date.now() - new Date(storedTs).getTime() > HALF_YEAR_MS);
 
-    var [parksBase, setParksBase]             = useState(loadStoredBase() || BUILTIN_DB);
+    /* Empty until the API answers: there is no local carpark list to fall
+       back on, and inventing one is what caused the problem this replaces. */
+    var [parksBase, setParksBase]             = useState(loadStoredBase() || []);
     var [realtimeArr, setRealtimeArr]         = useState([]);
     var [connStatus, setConnStatus]           = useState('init'); // 'init'|'ok'|'delayed'|'error'
     var [lastErrMsg, setLastErrMsg]           = useState('');
@@ -737,6 +693,7 @@
     var [radius, setRadius]                   = useState(1000);
     var [vehicleType, setVehicleType]         = useState('light');
     var [selectedRegion, setSelectedRegion]   = useState('全部');
+    var regions = useMemo(function() { return zonesPresent(parksBase); }, [parksBase]);
     var [sortBy, setSortBy]                   = useState('spaces');
     var [activeNavId, setActiveNavId]         = useState(null);
     var [gpsError, setGpsError]               = useState(null);
@@ -800,10 +757,12 @@
         });
     }, []);
 
-    /* sync base data from detail API */
-    var syncBaseData = useCallback(function() {
+    /* Rebuild the carpark list from the DSAT open-data API. The API is the
+       only source: nothing here is merged with a local table, so a carpark
+       DSAT removes disappears and one it adds shows up. */
+    var syncBaseData = useCallback(function(isAuto) {
       setBaseSyncLoading(true);
-      setBaseSyncMsg('');
+      if (!isAuto) setBaseSyncMsg('');
       return fetchDetailXml()
         .then(function(text) {
           var parsed = parseDetailXml(text);
@@ -811,37 +770,12 @@
             return Promise.reject(new Error(
               '取到回應但解析到 0 個停車場 · ' + describePayload(text)));
           }
-          var merged = BUILTIN_DB.map(function(b) {
-            var remote = null;
-            for (var i = 0; i < parsed.length; i++) {
-              var p = parsed[i];
-              if ((p.id && String(p.id) === String(b.id)) ||
-                  (p.name && (p.name.indexOf(b.name) !== -1 || b.name.indexOf(p.name) !== -1))) {
-                remote = p;
-                break;
-              }
-            }
-            if (!remote) return b;
-            return Object.assign({}, b, {
-              name:    remote.name    || b.name,
-              address: remote.address || b.address,
-              phone:   remote.phone   || b.phone,
-              lat:     remote.lat     || b.lat,
-              lng:     remote.lng     || b.lng,
-              capacity: {
-                light: remote.capacity.light || b.capacity.light,
-                moto:  remote.capacity.moto  || b.capacity.moto,
-                ev:    remote.capacity.ev    || b.capacity.ev,
-                heavy: remote.capacity.heavy || b.capacity.heavy
-              }
-            });
-          });
-          saveStoredBase(merged);
-          setParksBase(merged);
+          saveStoredBase(parsed);
+          setParksBase(parsed);
           var ts = new Date().toISOString();
           setLastBaseSync(ts);
           setSyncReminder(false);
-          setBaseSyncMsg('同步成功！已更新 ' + parsed.length + ' 個停車場資料。');
+          setBaseSyncMsg('同步成功！已從交通事務局取得 ' + parsed.length + ' 個停車場。');
         })
         .catch(function(e) {
           console.error('[BaseSync FAILED]', e && e.message, e && e.report);
@@ -854,15 +788,15 @@
         });
     }, []);
 
-    /* factory reset */
     var factoryReset = useCallback(function() {
-      if (!window.confirm('確定要恢復出廠設定？這將清除所有同步的停車場資料。')) return;
+      if (!window.confirm('確定要清除已下載嘅停車場資料並重新向交通事務局取一次？')) return;
       clearStoredBase();
-      setParksBase(BUILTIN_DB);
+      setParksBase([]);
       setLastBaseSync(null);
       setSyncReminder(false);
-      setBaseSyncMsg('已恢復出廠設定。');
-    }, []);
+      setBaseSyncMsg('已清除，重新下載中…');
+      syncBaseData(false);
+    }, [syncBaseData]);
 
     /* on mount: initial realtime fetch + interval */
     useEffect(function() {
@@ -870,6 +804,17 @@
       var timer = setInterval(function() { fetchRealtime(true); }, REALTIME_INTERVAL);
       return function() { clearInterval(timer); };
     }, [fetchRealtime]);
+
+    /* With no bundled list, the first run has nothing to show until the
+       API answers, so fetch it rather than waiting for the settings panel. */
+    var didAutoSync = useRef(false);
+    useEffect(function() {
+      if (didAutoSync.current) return;
+      if (parksBase.length === 0) {
+        didAutoSync.current = true;
+        syncBaseData(true);
+      }
+    }, [parksBase.length, syncBaseData]);
 
     /* search autocomplete */
     var handleSearchInput = useCallback(function(val) {
@@ -1054,35 +999,31 @@
               {noData && (
                 <div className="text-[10px] text-orange-500 mb-1.5 flex items-center space-x-1">
                   <i className="fa-solid fa-triangle-exclamation"></i>
-                  <span>即時車位數據未能讀取，顯示停車場總容量</span>
+                  <span>未取得呢個停車場嘅即時車位數據</span>
                 </div>
               )}
               <div className="grid grid-cols-4 gap-1.5">
                 {[
-                  { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? (park.capacity.light  || 0) : 0, sel:'light', ring:'ring-blue-300' },
-                  { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? (park.capacity.ev     || 0) : 0, sel:'ev',    ring:'ring-green-300' },
-                  { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? (park.capacity.moto   || 0) : 0, sel:'moto',  ring:'ring-orange-300' },
-                  { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? (park.capacity.heavy  || 0) : 0, sel:'all',   ring:'ring-slate-300' }
+                  { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? park.capacity.light : null, sel:'light', ring:'ring-blue-300' },
+                  { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? park.capacity.ev : null, sel:'ev',    ring:'ring-green-300' },
+                  { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? park.capacity.moto : null, sel:'moto',  ring:'ring-orange-300' },
+                  { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? park.capacity.heavy : null, sel:'all',   ring:'ring-slate-300' }
                 ].map(function(item) {
                   var active = vehicleType === item.sel;
                   var hasAvail = item.avail !== null && item.avail !== undefined;
+                  var hasCap   = typeof item.cap === 'number';
                   return (
                     <div key={item.key}
                       className={'rounded-lg p-1.5 text-center border ' +
                         (active ? 'bg-blue-50 border-blue-300 ring-1 ' + item.ring : 'bg-gray-50 border-gray-100')}>
                       <i className={'fa-solid ' + item.icon + ' text-gray-400 text-[10px]'}></i>
                       <div className="text-[9px] text-gray-400">{item.label}</div>
-                      {hasAvail ? (
-                        <div>
-                          <span className={'text-sm ' + spaceColor(item.avail, item.cap)}>{item.avail}</span>
-                          <span className="text-[9px] text-gray-400">/{item.cap}</span>
-                        </div>
-                      ) : (
-                        <div>
-                          <span className="text-xs text-gray-300">---</span>
-                          <span className="text-[9px] text-gray-400">/{item.cap}</span>
-                        </div>
-                      )}
+                      <div>
+                        {hasAvail
+                          ? <span className={'text-sm ' + spaceColor(item.avail, item.cap)}>{item.avail}</span>
+                          : <span className="text-xs text-gray-300">---</span>}
+                        {hasCap && <span className="text-[9px] text-gray-400">/{item.cap}</span>}
+                      </div>
                     </div>
                   );
                 })}
@@ -1181,15 +1122,16 @@
     var regionStats = useMemo(function() {
       var pool = selectedRegion === '全部' ? mergedParks
         : mergedParks.filter(function(p) { return p.region === selectedRegion; });
-      var st = { light:{a:0,t:0,known:false}, moto:{a:0,t:0,known:false},
-                 ev:{a:0,t:0,known:false},    heavy:{a:0,t:0,known:false} };
+      var st = { light:{a:0,t:0,known:false,tKnown:false}, moto:{a:0,t:0,known:false,tKnown:false},
+                 ev:{a:0,t:0,known:false,tKnown:false},    heavy:{a:0,t:0,known:false,tKnown:false} };
       pool.forEach(function(p) {
         var cap = p.capacity || {};
         ['light', 'moto', 'ev', 'heavy'].forEach(function(k) {
-          st[k].t += (cap[k] || 0);
+          /* Only count readings and totals that exist; a column the feed
+             never publishes stays 'unknown' instead of summing to a
+             false 0. */
+          if (typeof cap[k] === 'number') { st[k].t += cap[k]; st[k].tKnown = true; }
           var v = p.spaces ? p.spaces[k] : null;
-          /* Only count a reading that exists; a whole column DSAT never
-             reports stays 'unknown' instead of totalling to a false 0. */
           if (v !== null && v !== undefined) { st[k].a += v; st[k].known = true; }
         });
       });
@@ -1254,7 +1196,11 @@
               </div>
             </div>
             <div className="flex items-center justify-between">
-              <p className="text-emerald-200 text-xs">全澳 {parksBase.length} 個公共停車場</p>
+              <p className="text-emerald-200 text-xs">
+                {parksBase.length > 0
+                  ? '全澳 ' + parksBase.length + ' 個公共停車場'
+                  : '正在向交通事務局取得停車場名單…'}
+              </p>
               <div className="flex items-center space-x-2">
                 {lastRtTs ? (
                   <p className="text-emerald-300 text-[10px]">
@@ -1361,7 +1307,10 @@
 
               <div className="bg-slate-700 rounded-lg p-3">
                 <div className="text-xs font-semibold text-slate-300 mb-1">恢復出廠設定</div>
-                <div className="text-[10px] text-slate-400 mb-2">清除所有同步資料，恢復程式內建 {BUILTIN_DB.length} 個停車場記錄。</div>
+                <div className="text-[10px] text-slate-400 mb-2">
+                  清除已下載嘅停車場資料，再重新向交通事務局攞一次。<br/>
+                  本程式冇內建停車場名單，所有資料都係即時由 data.gov.mo 開放數據取得。
+                </div>
                 <button
                   onClick={factoryReset}
                   className="w-full py-2 bg-red-700 hover:bg-red-600 rounded-lg text-sm font-medium transition-colors flex items-center justify-center space-x-2"
@@ -1458,7 +1407,7 @@
               </div>
             )}
 
-            {focusParkId === null && (
+            {focusParkId === null && parksBase.length > 0 && (
             <React.Fragment>
             {/* GPS button */}
             <button onClick={handleFindParking}
@@ -1487,7 +1436,7 @@
             <div className="mb-3">
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">區域查詢</label>
               <div className="flex flex-wrap gap-1.5">
-                {REGIONS.map(function(reg) {
+                {regions.map(function(reg) {
                   return (
                     <button key={reg} onClick={function(){ setSelectedRegion(reg); }}
                       className={'py-1 px-2.5 text-xs rounded-full border transition-colors ' +
@@ -1564,7 +1513,7 @@
           </div>
 
           {/* ── Region Stats Bar ── */}
-          {focusParkId === null && (
+          {focusParkId === null && parksBase.length > 0 && (
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-emerald-100">
             <div className="flex justify-between items-center mb-1.5">
               <span className="text-xs font-bold text-emerald-800">{selectedRegion} ({regionStats.count}個停車場)</span>
@@ -1587,9 +1536,9 @@
                     <div className="text-[9px] text-gray-400">{item.label}</div>
                     <div className="text-xs font-bold text-gray-800">
                       {st.known
-                        ? <span className={spaceColor(st.a, st.t)}>{st.a}</span>
-                        : <span className="text-gray-300 font-normal" title="交通局未有提供呢個車型嘅即時數據">---</span>}
-                      <span className="text-[9px] text-gray-400 font-normal">/{st.t}</span>
+                        ? <span className={spaceColor(st.a, st.tKnown ? st.t : null)}>{st.a}</span>
+                        : <span className="text-gray-300 font-normal" title="交通事務局未有提供呢個車型嘅即時數據">---</span>}
+                      {st.tKnown && <span className="text-[9px] text-gray-400 font-normal">/{st.t}</span>}
                     </div>
                   </div>
                 );
@@ -1612,9 +1561,10 @@
 
             <div className="px-4 py-2 flex justify-between items-center">
               <span className="text-xs text-gray-500">
-                {userLocation && radius !== Infinity
-                  ? '找到 ' + displayedParks.length + ' 個停車場'
-                  : '列出 ' + displayedParks.length + ' 個停車場'}
+                {parksBase.length === 0 ? ''
+                  : (userLocation && radius !== Infinity
+                      ? '找到 ' + displayedParks.length + ' 個停車場'
+                      : '列出 ' + displayedParks.length + ' 個停車場')}
               </span>
               {realtimeArr.length > 0 && (
                 <span className="text-[10px] text-gray-400">
@@ -1627,7 +1577,34 @@
             <div className="px-4 space-y-3 pb-4">
               {displayedParks.map(renderParkCard)}
 
-              {displayedParks.length === 0 && !rtLoading && (
+              {parksBase.length === 0 && baseSyncLoading && (
+                <div className="text-center text-gray-400 py-16">
+                  <i className="fa-solid fa-rotate spin text-3xl mb-3 block text-emerald-300"></i>
+                  <p className="text-sm">正在向交通事務局取得停車場名單…</p>
+                  <p className="text-xs mt-1">首次使用需要下載一次</p>
+                </div>
+              )}
+
+              {/* There is no bundled list to fall back on, so say that
+                  plainly rather than show numbers that are not real. */}
+              {parksBase.length === 0 && !baseSyncLoading && (
+                <div className="text-center py-14 px-6">
+                  <i className="fa-solid fa-cloud-arrow-down text-4xl mb-3 block text-gray-200"></i>
+                  <p className="text-sm text-gray-500 font-medium">未能取得停車場名單</p>
+                  <p className="text-xs mt-2 text-gray-400 leading-relaxed">
+                    本程式唔會內建停車場資料，全部即時由交通事務局開放數據取得，所以連唔到就冇嘢可以顯示。
+                  </p>
+                  <button onClick={function(){ syncBaseData(false); }}
+                    className="mt-4 px-5 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors">
+                    <i className="fa-solid fa-rotate mr-2"></i>重新嘗試
+                  </button>
+                  {baseSyncMsg && (
+                    <pre className="mt-3 text-[10px] text-gray-400 whitespace-pre-wrap break-all text-left">{baseSyncMsg}</pre>
+                  )}
+                </div>
+              )}
+
+              {displayedParks.length === 0 && parksBase.length > 0 && !rtLoading && (
                 <div className="text-center text-gray-400 py-16">
                   <i className="fa-solid fa-square-parking text-4xl mb-3 block text-gray-200"></i>
                   <p className="text-sm">無符合條件的停車場</p>
