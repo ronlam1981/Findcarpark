@@ -145,76 +145,146 @@
     return (h >= 8 && h < 20) ? { fee:6, label:'日間 08:00-20:00' } : { fee:3, label:'夜間 20:00-08:00' };
   }
 
+  /* DSAT publishes the readings as XML attributes whose spelling drifts
+     between endpoints (Car_CNT here, CP_ID there, NameC elsewhere), and an
+     XML document — unlike an HTML one — matches attribute and tag names
+     case-sensitively. Looking for 'CAR_CNT' therefore silently missed the
+     real 'Car_CNT' and every count came back 0. Match without regard to
+     case, and keep the caller's list order as the preference order so the
+     documented name still wins when a record carries more than one. */
   function getVal(el, tags) {
-    /* Some DSAT XML variants put the value as an XML attribute on the
-       item element (e.g. <Car_park_info CP_ID="1" NameC="..." />)
-       rather than as a nested child element; check both forms. */
+    var wanted = {};
     for (var i = 0; i < tags.length; i++) {
-      var attr = el.getAttribute && el.getAttribute(tags[i]);
-      if (attr && attr.trim()) return attr.trim();
+      var k = tags[i].toLowerCase();
+      if (!(k in wanted)) wanted[k] = i;
     }
-    for (var i = 0; i < tags.length; i++) {
-      var nodes = el.getElementsByTagName(tags[i]);
-      if (nodes.length > 0 && nodes[0].textContent.trim()) {
-        return nodes[0].textContent.trim();
+    var bestRank = -1, bestVal = '';
+
+    var attrs = el.attributes || [];
+    for (var a = 0; a < attrs.length; a++) {
+      var rank = wanted[(attrs[a].name || '').toLowerCase()];
+      var v = (attrs[a].value || '').trim();
+      if (rank !== undefined && v && (bestRank === -1 || rank < bestRank)) {
+        bestRank = rank; bestVal = v;
       }
     }
-    return '';
+    if (bestRank !== -1) return bestVal;
+
+    var kids = el.childNodes || [];
+    for (var c = 0; c < kids.length; c++) {
+      if (kids[c].nodeType !== 1) continue;
+      var r = wanted[(kids[c].nodeName || '').toLowerCase()];
+      var t = (kids[c].textContent || '').trim();
+      if (r !== undefined && t && (bestRank === -1 || r < bestRank)) {
+        bestRank = r; bestVal = t;
+      }
+    }
+    return bestRank !== -1 ? bestVal : '';
+  }
+
+  /* Element lookup, likewise case-insensitive. */
+  function findItems(doc, names) {
+    var wanted = {};
+    for (var i = 0; i < names.length; i++) wanted[names[i].toLowerCase()] = true;
+    var all = doc.getElementsByTagName('*');
+    var out = [];
+    for (var j = 0; j < all.length; j++) {
+      if (wanted[(all[j].nodeName || '').toLowerCase()]) out.push(all[j]);
+    }
+    return out;
+  }
+
+  var ITEM_TAGS = ['Car_park_info', 'carparkInfo', 'CarParkInfo'];
+
+  /* Lists the field names the first record actually carries. When DSAT
+     renames a field again, this turns a screenful of silent zeroes into a
+     diagnostic that names the fields on offer. */
+  function sampleFields(text) {
+    try {
+      var items = findItems(new DOMParser().parseFromString(text, 'text/xml'), ITEM_TAGS);
+      if (!items.length) return '（冇記錄）';
+      var el = items[0], names = [];
+      var attrs = el.attributes || [];
+      for (var i = 0; i < attrs.length; i++) names.push(attrs[i].name);
+      var kids = el.childNodes || [];
+      for (var j = 0; j < kids.length; j++) {
+        if (kids[j].nodeType === 1) names.push('<' + kids[j].nodeName + '>');
+      }
+      return names.length ? names.join(', ') : '（該記錄冇任何欄位）';
+    } catch (e) { return '（讀唔到欄位名）'; }
+  }
+
+  /* Macau sits in a small box. The feed names its axes X_coords / Y_coords
+     without saying which is latitude, and a swap would drop every carpark
+     into the sea, so accept a pair only if it actually lands in Macau —
+     trying the other order before giving up. */
+  function macauCoords(x, y) {
+    function inBox(lat, lng) {
+      return lat > 22.0 && lat < 22.3 && lng > 113.4 && lng < 113.7;
+    }
+    if (inBox(y, x)) return { lat: y, lng: x };
+    if (inBox(x, y)) return { lat: x, lng: y };
+    return null;
   }
 
   function toInt(s) { return parseInt(s, 10) || 0; }
+  /* A reading the feed simply does not publish is not "zero free spaces".
+     Returning null keeps the two apart so the card can show "---" rather
+     than a red 已滿 for a vehicle type DSAT never reports on. */
+  function toCount(s) {
+    if (s === '' || s === null || s === undefined) return null;
+    var n = parseInt(s, 10);
+    return isNaN(n) ? null : n;
+  }
   function toFloat(s) { return parseFloat(s) || 0; }
 
   /* ─── XML Parsers ─── */
   function parseMaintenanceXml(text) {
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(text, 'text/xml');
-    /* Support both new API (carparkInfo) and old API (Car_park_info) tag names */
-    var items = doc.getElementsByTagName('carparkInfo');
-    if (!items.length) items = doc.getElementsByTagName('CarParkInfo');
-    if (!items.length) items = doc.getElementsByTagName('Car_park_info');
-    if (!items.length) items = doc.getElementsByTagName('car_park_info');
+    var doc = new DOMParser().parseFromString(text, 'text/xml');
+    var items = findItems(doc, ITEM_TAGS);
     var result = [];
     for (var i = 0; i < items.length; i++) {
       var el = items[i];
-      var no   = getVal(el, ['CAR_PARK_NO','car_park_no','ID','id','NO','CP_ID']);
-      /* Old API uses <Title>, new API uses <CNAME> */
-      var name = getVal(el, ['CNAME','cname','Title','title','NAME','name','ENAME','NameC']);
-      /* Old API: light_car / motorcycle; new API: CAR_CNT / MO_CNT */
-      var lc   = toInt(getVal(el, ['CAR_CNT','car_cnt','light_car','LIGHT_CAR','CAR']));
-      var mo   = toInt(getVal(el, ['MO_CNT','mo_cnt','MB_CNT','motorcycle','MOTORCYCLE','MOTO']));
-      var ev   = toInt(getVal(el, ['EV_CNT','ev_cnt','EV']));
-      var hv   = toInt(getVal(el, ['HEAVY_CNT','heavy_cnt','HEAVY']));
+      /* The realtime feed keys on ID, which matches car_park_detail's CP_ID. */
+      var no   = getVal(el, ['ID', 'CP_ID', 'CAR_PARK_NO', 'NO']);
+      var name = getVal(el, ['NameC', 'CNAME', 'Title', 'NAME', 'ENAME']);
+      /* Car_CNT = light vehicles, MB_CNT = motorcycles. DSAT does not
+         publish EV or heavy-vehicle counts, so those stay null. */
+      var lc   = toCount(getVal(el, ['Car_CNT', 'CAR_CNT', 'LIGHT_CAR', 'CAR']));
+      var mo   = toCount(getVal(el, ['MB_CNT', 'MO_CNT', 'MOTORCYCLE', 'MOTO']));
+      var ev   = toCount(getVal(el, ['EV_CNT', 'EV']));
+      var hv   = toCount(getVal(el, ['HEAVY_CNT', 'HEAVY']));
+      var when = getVal(el, ['Time', 'UPDATE_TIME', 'TIMESTAMP']);
       if (name || no) {
-        result.push({ no: no, name: name, light: lc, moto: mo, ev: ev, heavy: hv });
+        result.push({ no: no, name: name, light: lc, moto: mo,
+                      ev: ev, heavy: hv, time: when });
       }
     }
     return result;
   }
 
   function parseDetailXml(text) {
-    var parser = new DOMParser();
-    var doc = parser.parseFromString(text, 'text/xml');
-    var items = doc.getElementsByTagName('carparkInfo');
-    if (!items.length) items = doc.getElementsByTagName('CarParkInfo');
-    if (!items.length) items = doc.getElementsByTagName('Car_park_info');
-    if (!items.length) items = doc.getElementsByTagName('car_park_info');
+    var doc = new DOMParser().parseFromString(text, 'text/xml');
+    var items = findItems(doc, ITEM_TAGS);
     var result = [];
     for (var i = 0; i < items.length; i++) {
       var el = items[i];
-      var no      = getVal(el, ['CAR_PARK_NO','car_park_no','NO','CP_ID','ID']);
-      var cname   = getVal(el, ['CNAME','cname','Title','name','NameC']);
-      var addr    = getVal(el, ['ADDRESS_C','address_c','ADDRESS','address']);
-      var phone   = getVal(el, ['PHONE','phone','TEL','tel']);
-      var lat     = toFloat(getVal(el, ['LATITUDE','latitude','LAT','lat','Y_coords']));
-      var lng     = toFloat(getVal(el, ['LONGITUDE','longitude','LNG','lng','X_coords']));
-      var tLight  = toInt(getVal(el, ['TOTAL_CAR','total_car','CAR_CAPACITY','TOTAL_LIGHT']));
-      var tMoto   = toInt(getVal(el, ['TOTAL_MOTO','total_moto','MOTO_CAPACITY']));
-      var tEv     = toInt(getVal(el, ['TOTAL_EV','total_ev','EV_CAPACITY']));
-      var tHeavy  = toInt(getVal(el, ['TOTAL_HEAVY','total_heavy','HEAVY_CAPACITY']));
-      if (cname && lat && lng) {
+      var no      = getVal(el, ['CP_ID', 'ID', 'CAR_PARK_NO', 'NO']);
+      var cname   = getVal(el, ['NameC', 'CNAME', 'Title', 'NAME']);
+      var addr    = getVal(el, ['ADDRESS_C', 'ADDRESS']);
+      var phone   = getVal(el, ['PHONE', 'TEL']);
+      var pos     = macauCoords(toFloat(getVal(el, ['X_coords', 'LONGITUDE', 'LNG'])),
+                                toFloat(getVal(el, ['Y_coords', 'LATITUDE', 'LAT'])));
+      var tLight  = toInt(getVal(el, ['TOTAL_CAR', 'CAR_CAPACITY', 'TOTAL_LIGHT']));
+      var tMoto   = toInt(getVal(el, ['TOTAL_MOTO', 'MOTO_CAPACITY']));
+      var tEv     = toInt(getVal(el, ['TOTAL_EV', 'EV_CAPACITY']));
+      var tHeavy  = toInt(getVal(el, ['TOTAL_HEAVY', 'HEAVY_CAPACITY']));
+      /* Coordinates are optional: a record without usable ones still carries
+         a name, address and capacity worth syncing, and the built-in
+         coordinates stay in place for it. */
+      if (cname || no) {
         result.push({ id: no, name: cname, address: addr, phone: phone,
-          lat: lat, lng: lng,
+          lat: pos ? pos.lat : 0, lng: pos ? pos.lng : 0,
           capacity: { light: tLight, moto: tMoto, ev: tEv, heavy: tHeavy } });
       }
     }
@@ -563,6 +633,17 @@
             return Promise.reject(new Error(
               '取到回應但解析到 0 個停車場 · ' + describePayload(text)));
           }
+          /* Records parsed but no readings at all means the feed renamed its
+             count fields — the failure that showed every carpark as 0 rather
+             than saying anything was wrong. Fail loudly and name the fields. */
+          var reported = arr.filter(function(r) {
+            return r.light !== null || r.moto !== null || r.ev !== null || r.heavy !== null;
+          }).length;
+          if (reported === 0) {
+            return Promise.reject(new Error(
+              '解析到 ' + arr.length + ' 個停車場，但一個車位數都讀唔到（欄位名可能變咗）· 實際欄位：' +
+              sampleFields(text)));
+          }
           setRealtimeArr(arr);
           setLastRtTs(new Date());
           setConnStatus('ok');
@@ -836,9 +917,15 @@
 
         var aS = getVehicleSpaces(a, vehicleType);
         var bS = getVehicleSpaces(b, vehicleType);
+        /* A carpark DSAT does not report on sorts after the ones it does,
+           but ahead of the ones it reports as full. */
         var aFull = aS === 0, bFull = bS === 0;
         if (aFull && !bFull) return 1;
         if (!aFull && bFull) return -1;
+        var aUnk = aS === null, bUnk = bS === null;
+        if (aUnk && !bUnk) return 1;
+        if (!aUnk && bUnk) return -1;
+        if (aUnk && bUnk) return 0;
 
         if (sortBy === 'distance' && a.distance !== null && b.distance !== null) {
           return a.distance - b.distance;
@@ -854,23 +941,36 @@
     var regionStats = useMemo(function() {
       var pool = selectedRegion === '全部' ? mergedParks
         : mergedParks.filter(function(p) { return p.region === selectedRegion; });
-      var st = { light:{a:0,t:0}, moto:{a:0,t:0}, ev:{a:0,t:0}, heavy:{a:0,t:0} };
+      var st = { light:{a:0,t:0,known:false}, moto:{a:0,t:0,known:false},
+                 ev:{a:0,t:0,known:false},    heavy:{a:0,t:0,known:false} };
       pool.forEach(function(p) {
         var cap = p.capacity || {};
-        st.light.t  += (cap.light  || 0);  st.light.a  += (p.spaces ? (p.spaces.light  || 0) : 0);
-        st.moto.t   += (cap.moto   || 0);  st.moto.a   += (p.spaces ? (p.spaces.moto   || 0) : 0);
-        st.ev.t     += (cap.ev     || 0);  st.ev.a     += (p.spaces ? (p.spaces.ev     || 0) : 0);
-        st.heavy.t  += (cap.heavy  || 0);  st.heavy.a  += (p.spaces ? (p.spaces.heavy  || 0) : 0);
+        ['light', 'moto', 'ev', 'heavy'].forEach(function(k) {
+          st[k].t += (cap[k] || 0);
+          var v = p.spaces ? p.spaces[k] : null;
+          /* Only count a reading that exists; a whole column DSAT never
+             reports stays 'unknown' instead of totalling to a false 0. */
+          if (v !== null && v !== undefined) { st[k].a += v; st[k].known = true; }
+        });
       });
       return { count: pool.length, st: st };
     }, [mergedParks, selectedRegion]);
 
+    /* null means DSAT does not report that vehicle type, which is not the
+       same as no free spaces — callers that sort or compare must keep them
+       apart, so this returns null rather than 0 in that case. */
     function getVehicleSpaces(park, type) {
-      if (!park.spaces) return 0;
+      if (!park.spaces) return null;
       if (type === 'light') return park.spaces.light;
       if (type === 'moto')  return park.spaces.moto;
       if (type === 'ev')    return park.spaces.ev;
-      return park.spaces.light + park.spaces.moto + park.spaces.ev + park.spaces.heavy;
+      var sum = null;
+      ['light', 'moto', 'ev', 'heavy'].forEach(function(k) {
+        if (park.spaces[k] !== null && park.spaces[k] !== undefined) {
+          sum = (sum === null ? 0 : sum) + park.spaces[k];
+        }
+      });
+      return sum;
     }
 
     function openMap(type, lat, lng, name) {
@@ -1228,7 +1328,9 @@
                     <i className={'fa-solid ' + item.icon + ' ' + item.color + ' text-xs mb-0.5'}></i>
                     <div className="text-[9px] text-gray-400">{item.label}</div>
                     <div className="text-xs font-bold text-gray-800">
-                      <span className={spaceColor(st.a, st.t)}>{st.a}</span>
+                      {st.known
+                        ? <span className={spaceColor(st.a, st.t)}>{st.a}</span>
+                        : <span className="text-gray-300 font-normal" title="交通局未有提供呢個車型嘅即時數據">---</span>}
                       <span className="text-[9px] text-gray-400 font-normal">/{st.t}</span>
                     </div>
                   </div>
@@ -1308,7 +1410,7 @@
                           { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? (park.capacity.heavy  || 0) : 0, sel:'all',   ring:'ring-slate-300' }
                         ].map(function(item) {
                           var active = vehicleType === item.sel;
-                          var hasAvail = item.avail !== null;
+                          var hasAvail = item.avail !== null && item.avail !== undefined;
                           return (
                             <div key={item.key}
                               className={'rounded-lg p-1.5 text-center border ' +
