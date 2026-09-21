@@ -6,6 +6,8 @@
   <title>澳門找車位小助手</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/babel-standalone@6/babel.min.js"></script>
@@ -18,6 +20,25 @@
     .pulse-red { animation: pulse-red 1.2s ease-in-out infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .spin { animation: spin 1s linear infinite; display: inline-block; }
+
+    /* Map pins carry the free-space count itself, so the map answers
+       "where can I park" without tapping every marker. */
+    .cp-pin-wrap { background: none !important; border: none !important; }
+    .cp-pin {
+      display: flex; align-items: center; justify-content: center;
+      min-width: 30px; height: 23px; padding: 0 6px;
+      border-radius: 12px; border: 2px solid #fff;
+      color: #fff; font-size: 11px; font-weight: 700; line-height: 1;
+      box-shadow: 0 1px 4px rgba(0,0,0,.35);
+      white-space: nowrap;
+    }
+    .cp-me {
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #2563eb; border: 3px solid #fff;
+      box-shadow: 0 0 0 2px rgba(37,99,235,.4);
+    }
+    .leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+    .leaflet-container { font-family: inherit; }
   </style>
 </head>
 <body>
@@ -617,6 +638,16 @@
     return scored.slice(0, limit || 8).map(function(x) { return x.park; });
   }
 
+  /* Same thresholds as the cards' colour scale, as background colours for
+     the map pins. */
+  function pinColor(count, cap) {
+    if (count === null || count === undefined) return '#9ca3af';
+    if (cap === 0) return '#9ca3af';
+    if (count === 0) return '#dc2626';
+    if (count <= 19) return '#f59e0b';
+    return '#059669';
+  }
+
   /* ─── localStorage helpers ─── */
   function loadStoredBase() {
     try {
@@ -696,6 +727,10 @@
     var regions = useMemo(function() { return zonesPresent(parksBase); }, [parksBase]);
     var [sortBy, setSortBy]                   = useState('spaces');
     var [activeNavId, setActiveNavId]         = useState(null);
+    var [viewMode, setViewMode]               = useState('list');
+    var [mapError, setMapError]               = useState('');
+    var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null);
+    var mapElRef = useRef(null), fitKeyRef = useRef('');
     var [gpsError, setGpsError]               = useState(null);
     var [searchText, setSearchText]           = useState('');
     /* id of the one carpark the user asked to look up, or null for the list */
@@ -1118,6 +1153,140 @@
       return displayedParks.length ? displayedParks[0] : null;
     }, [displayedParks, focusParkId]);
 
+    /* A carpark whose coordinates the feed did not publish cannot be placed.
+       Counting them lets the map say so instead of quietly dropping them. */
+    var mappableParks = useMemo(function() {
+      return displayedParks.filter(function(p) { return p.lat && p.lng; });
+    }, [displayedParks]);
+    var unmappableCount = displayedParks.length - mappableParks.length;
+
+    /* ─── Map ─────────────────────────────────────────────────────────
+       Leaflet is imperative, so the map lives in refs and this effect
+       syncs it with whatever the filters currently show. */
+    useEffect(function() {
+      if (viewMode !== 'map') return;
+      var L = window.L;
+      if (!L) {
+        setMapError('地圖程式庫載入唔到，可能係網絡問題。可以切返清單檢視。');
+        return;
+      }
+      setMapError('');
+
+      /* Switching to the list unmounts the container, so a map kept from
+         last time is bound to a node that is no longer on the page. */
+      if (mapRef.current && mapRef.current.getContainer() !== mapElRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null; layerRef.current = null; meRef.current = null;
+        fitKeyRef.current = '';
+      }
+
+      if (!mapRef.current) {
+        if (!mapElRef.current) return;
+        var m = L.map(mapElRef.current, { zoomControl: true })
+                 .setView([22.17, 113.55], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '地圖 © OpenStreetMap 貢獻者｜車位數據 © 澳門交通事務局'
+        }).addTo(m);
+        mapRef.current = m;
+        layerRef.current = L.layerGroup().addTo(m);
+      }
+      var map = mapRef.current;
+      /* The container has just been shown, so Leaflet still thinks it has
+         no size. */
+      map.invalidateSize();
+
+      layerRef.current.clearLayers();
+
+      mappableParks.forEach(function(park) {
+        var n = getVehicleSpaces(park, vehicleType);
+        var cap = park.capacity ? park.capacity[vehicleType === 'all' ? 'light' : vehicleType] : null;
+        var label = (n === null || n === undefined) ? '?' : String(n);
+        var marker = L.marker([park.lat, park.lng], {
+          icon: L.divIcon({
+            className: 'cp-pin-wrap',
+            html: '<div class="cp-pin" style="background:' + pinColor(n, cap) + '">' + label + '</div>',
+            iconSize: [34, 23],
+            iconAnchor: [17, 11]
+          }),
+          title: park.name
+        });
+
+        marker.bindPopup(function() {
+          var box = document.createElement('div');
+          var title = document.createElement('div');
+          title.style.cssText = 'font-weight:700;margin-bottom:4px';
+          title.textContent = park.name;
+          box.appendChild(title);
+
+          if (park.address) {
+            var ad = document.createElement('div');
+            ad.style.cssText = 'color:#6b7280;font-size:11px;margin-bottom:6px';
+            ad.textContent = park.address;
+            box.appendChild(ad);
+          }
+
+          var rows = document.createElement('div');
+          rows.style.cssText = 'font-size:12px;margin-bottom:8px';
+          [['輕型', 'light'], ['電單車', 'moto'], ['電動', 'ev'], ['重型', 'heavy']].forEach(function(pair) {
+            var v = park.spaces ? park.spaces[pair[1]] : null;
+            if (v === null || v === undefined) return;
+            var r = document.createElement('div');
+            r.textContent = pair[0] + '：' + v +
+              (typeof (park.capacity || {})[pair[1]] === 'number' ? ' / ' + park.capacity[pair[1]] : '');
+            rows.appendChild(r);
+          });
+          if (!rows.childNodes.length) {
+            rows.textContent = '未有即時車位數據';
+            rows.style.color = '#9ca3af';
+          }
+          box.appendChild(rows);
+
+          var bar = document.createElement('div');
+          bar.style.cssText = 'display:flex;gap:6px';
+          var detail = document.createElement('button');
+          detail.textContent = '詳細';
+          detail.style.cssText = 'flex:1;padding:5px 8px;border-radius:8px;border:1px solid #d1d5db;background:#fff;font-size:12px;cursor:pointer';
+          detail.addEventListener('click', function() {
+            setFocusParkId(park.id);
+            setViewMode('list');
+          });
+          var nav = document.createElement('button');
+          nav.textContent = '導航';
+          nav.style.cssText = 'flex:1;padding:5px 8px;border-radius:8px;border:none;background:#059669;color:#fff;font-size:12px;cursor:pointer';
+          nav.addEventListener('click', function() {
+            openMap('google', park.lat, park.lng, park.name);
+          });
+          bar.appendChild(detail); bar.appendChild(nav);
+          box.appendChild(bar);
+          return box;
+        });
+
+        marker.addTo(layerRef.current);
+      });
+
+      if (meRef.current) { map.removeLayer(meRef.current); meRef.current = null; }
+      if (userLocation) {
+        meRef.current = L.marker([userLocation.lat, userLocation.lng], {
+          icon: L.divIcon({ className: 'cp-pin-wrap', html: '<div class="cp-me"></div>',
+                            iconSize: [16, 16], iconAnchor: [8, 8] }),
+          title: locationLabel || '我的位置'
+        }).addTo(map);
+      }
+
+      /* Refit only when the set of carparks or the origin actually changes,
+         so the 30-second refresh does not throw away the user's pan. */
+      var key = mappableParks.map(function(p) { return p.id; }).join(',') +
+                '|' + (userLocation ? userLocation.lat + ',' + userLocation.lng : '');
+      if (key !== fitKeyRef.current) {
+        fitKeyRef.current = key;
+        var pts = mappableParks.map(function(p) { return [p.lat, p.lng]; });
+        if (userLocation) pts.push([userLocation.lat, userLocation.lng]);
+        if (pts.length === 1) map.setView(pts[0], 16);
+        else if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
+      }
+    }, [viewMode, mappableParks, vehicleType, userLocation, locationLabel]);
+
     /* region stats */
     var regionStats = useMemo(function() {
       var pool = selectedRegion === '全部' ? mergedParks
@@ -1508,6 +1677,23 @@
                 })}
               </div>
             </div>
+
+            {/* Finding a carpark is a question about places, so the same
+                list is also offered on a map. */}
+            <div className="mt-4 grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-xl">
+              {[{id:'list', l:'清單', icon:'fa-list-ul'}, {id:'map', l:'地圖', icon:'fa-map-location-dot'}].map(function(v) {
+                return (
+                  <button key={v.id} onClick={function(){ setViewMode(v.id); }}
+                    className={'py-2 text-sm rounded-lg transition-colors flex items-center justify-center space-x-2 ' +
+                      (viewMode === v.id
+                        ? 'bg-white shadow-sm text-emerald-700 font-bold'
+                        : 'text-gray-500 hover:text-gray-700')}>
+                    <i className={'fa-solid ' + v.icon + ' text-xs'}></i>
+                    <span>{v.l}</span>
+                  </button>
+                );
+              })}
+            </div>
             </React.Fragment>
             )}
           </div>
@@ -1547,8 +1733,34 @@
           </div>
           )}
 
+          {/* ── Map ── */}
+          {focusParkId === null && viewMode === 'map' && parksBase.length > 0 && (
+          <div className="flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
+            {mapError ? (
+              <div className="p-6 text-center text-sm text-gray-500">
+                <i className="fa-solid fa-triangle-exclamation text-2xl mb-2 block text-gray-300"></i>
+                {mapError}
+              </div>
+            ) : (
+              <div ref={mapElRef} className="flex-1" style={{minHeight:'55vh'}}></div>
+            )}
+            <div className="px-4 py-2 bg-white border-t border-gray-100 text-[10px] text-gray-400 leading-relaxed">
+              數字 = {vehicleType === 'light' ? '輕型車' : vehicleType === 'moto' ? '電單車' : vehicleType === 'ev' ? '電動車' : '全部車型'}可用車位。
+              <span className="text-emerald-600 font-bold"> ●</span> 充足
+              <span className="text-amber-500 font-bold"> ●</span> 緊張
+              <span className="text-red-600 font-bold"> ●</span> 已滿
+              <span className="text-gray-400 font-bold"> ●</span> 冇數據
+              {unmappableCount > 0 && (
+                <span className="block mt-1 text-orange-500">
+                  另有 {unmappableCount} 個停車場因交通事務局未提供座標，無法喺地圖上顯示，請用清單檢視。
+                </span>
+              )}
+            </div>
+          </div>
+          )}
+
           {/* ── Park List ── */}
-          {focusParkId === null && (
+          {focusParkId === null && viewMode === 'list' && (
           <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
 
             {/* 距離最近 needs a location to sort by */}
