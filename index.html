@@ -58,6 +58,10 @@
   const LS_BASE_KEY  = 'mcp_base_v2';
   const LS_BASE_TS   = 'mcp_base_ts_v2';
   const LS_PROXY_KEY = 'mcp_custom_proxy';
+  /* 本程式自己嘅中轉，已經內建，用戶唔使自己填。冇咗佢就要靠公共中轉，
+     而嗰啲會執笠會收費 —— 要每個用戶自己去開個 Cloudflare 帳戶先用得到，
+     等於叫佢哋做開發者。設定入面仍然可以覆蓋，但預設就係呢個。 */
+  const DEFAULT_PROXY = 'https://findcarpark-proxy.ronlam1981.workers.dev';
   const LS_HISTORY_KEY = 'mcp_history_v1';
   const LS_HISTORY_OFF = 'mcp_history_off';
   const LS_COLLECT_PLAN = 'mcp_collect_plan';
@@ -419,7 +423,14 @@
      when present it is tried first, because it is the only route here that
      does not depend on a third-party free service staying up. */
   function customProxyBase() {
-    try { return (localStorage.getItem(LS_PROXY_KEY) || '').trim(); } catch (e) { return ''; }
+    try {
+      var v = (localStorage.getItem(LS_PROXY_KEY) || '').trim();
+      return v || DEFAULT_PROXY;
+    } catch (e) { return DEFAULT_PROXY; }
+  }
+  /* 有冇自己改過（用嚟喺設定度分辨「用緊內建」定「用緊自訂」）。 */
+  function hasCustomProxy() {
+    try { return !!(localStorage.getItem(LS_PROXY_KEY) || '').trim(); } catch (e) { return false; }
   }
   function buildProxyUrl(base, url) {
     base = (base || '').trim();
@@ -2332,15 +2343,15 @@
                       {shared.updatedAt && <span><br/>最後收集：{fmtTs(shared.updatedAt)}</span>}
                     </div>
                   </div>
-                ) : customProxyBase() ? (
+                ) : (
                   <div className="mb-3 rounded-lg bg-slate-800 border border-slate-600 p-2">
                     <div className="text-[10px] text-slate-400 leading-relaxed">
                       <i className="fa-solid fa-circle-info mr-1"></i>
-                      你已經設定咗中轉，但佢未有定時收集數據 —— 要喺 Cloudflare 綁定 KV
-                      同開 cron（部署指南第八節）。搞掂之後就唔使靠下面嘅瀏覽器收集。
+                      中轉暫時未有定時收集數據，所以下面嘅圖表用緊你部機自己嘅紀錄。
+                      （如果呢個中轉係你自己部署，見部署指南第八節：綁定 KV 同開 cron。）
                     </div>
                   </div>
-                ) : null}
+                )}
 
                 {!plan ? (
                   <div>
@@ -2460,10 +2471,13 @@
               </div>
 
               <div className="bg-slate-700 rounded-lg p-3 mb-3">
-                <div className="text-xs font-semibold text-slate-300 mb-1">自設中轉網址（進階）</div>
+                <div className="text-xs font-semibold text-slate-300 mb-1">中轉網址（進階）</div>
                 <div className="text-[10px] text-slate-400 mb-2">
-                  本程式係純靜態網站，要借中轉服務先讀到交通局 API。<br/>
-                  公用中轉全部失效時，可以填自己控制嘅中轉（例如 Cloudflare Worker），系統會優先用佢。
+                  本程式係純靜態網站，要借中轉服務先讀到交通局 API。
+                  <b className="text-slate-300">程式已經內建一個專用中轉，一般唔使改。</b><br/>
+                  {hasCustomProxy()
+                    ? '而家用緊你自己填嘅中轉。清空個框再儲存，就會用返內建嗰個。'
+                    : '而家用緊內建中轉。想改用自己嘅（例如你自己部署嘅 Cloudflare Worker），可以喺下面填。'}
                 </div>
                 <input
                   type="url"
