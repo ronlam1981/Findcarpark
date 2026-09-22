@@ -931,6 +931,34 @@
     return m + ' 分';
   }
 
+  /* Shared history collected by the relay's cron job. It runs on
+     Cloudflare around the clock, so where it exists it beats anything this
+     device could gather, and everyone pointed at the same relay sees the
+     same picture. */
+  function sharedHistoryUrl(base) {
+    base = (base || '').trim();
+    if (!base) return '';
+    return base.indexOf('?') === -1
+      ? base.replace(/\/$/, '') + '/?history=1'
+      : base + '&history=1';
+  }
+
+  function fetchSharedHistory(base) {
+    var url = sharedHistoryUrl(base);
+    if (!url) return Promise.resolve(null);
+    return timedFetch(url, {}, FETCH_TIMEOUT)
+      .then(function(r) {
+        if (!r.ok) return null;
+        return r.json();
+      })
+      .then(function(j) {
+        if (!j || !j.slots || typeof j.slots !== 'object') return null;
+        if (!j.samples) return null;
+        return j;
+      })
+      .catch(function() { return null; });
+  }
+
   function countSamples(hist) {
     var n = 0;
     for (var id in hist) {
@@ -1114,6 +1142,7 @@
     var [recording, setRecording]             = useState(historyEnabled);
     var [historyWarn, setHistoryWarn]         = useState('');
     var [plan, setPlan]                       = useState(loadPlan);
+    var [shared, setShared]                   = useState(null);
     var [planMsg, setPlanMsg]                 = useState('');
     var [nowTick, setNowTick]                 = useState(Date.now());
     var wakeLockRef = useRef(null);
@@ -1266,6 +1295,20 @@
       var timer = setInterval(function() { fetchRealtime(true); }, REALTIME_INTERVAL);
       return function() { clearInterval(timer); };
     }, [fetchRealtime]);
+
+    /* Ask the relay for what its cron job has gathered. Best-effort: no
+       relay, no KV, or an unreachable one all just mean the local history
+       is used instead. */
+    useEffect(function() {
+      var base = customProxyBase();
+      if (!base) { setShared(null); return; }
+      var cancelled = false;
+      fetchSharedHistory(base).then(function(j) { if (!cancelled) setShared(j); });
+      var timer = setInterval(function() {
+        fetchSharedHistory(base).then(function(j) { if (!cancelled) setShared(j); });
+      }, 15 * 60 * 1000);
+      return function() { cancelled = true; clearInterval(timer); };
+    }, [proxySaved]);
 
     /* With no bundled list, the first run has nothing to show until the
        API answers, so fetch it rather than waiting for the settings panel. */
@@ -1598,7 +1641,10 @@
       if (!park) return null;
       var type = (vehicleType === 'moto') ? 'moto' : 'light';
       var typeLabel = (type === 'moto') ? '電單車' : '輕型車';
-      var prof = profileFor(history, park.id, type);
+      /* The relay's cron job runs whether or not anyone has the app open, so
+         where it has readings for this carpark they are simply better. */
+      var fromShared = !!(shared && shared.slots && shared.slots[park.id]);
+      var prof = profileFor(fromShared ? shared.slots : history, park.id, type);
       var cap = park.capacity ? park.capacity[type] : null;
       var scale = busyScale(prof, cap);
 
@@ -1613,7 +1659,9 @@
           <h4 className="text-sm font-bold text-gray-800">
             <i className="fa-solid fa-chart-column mr-2 text-blue-600"></i>繁忙時間
           </h4>
-          <span className="text-[10px] text-gray-400">{typeLabel}‧本機紀錄</span>
+          <span className="text-[10px] text-gray-400">
+            {typeLabel}‧{fromShared ? '24 小時收集' : '本機紀錄'}
+          </span>
         </div>
       );
 
@@ -1625,9 +1673,11 @@
               <i className="fa-solid fa-hourglass-half text-2xl text-gray-200 block mb-2"></i>
               <p className="text-sm text-gray-500 font-medium">資料收集中</p>
               <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
-                本程式冇後端，唔可以全日自動記錄。<br/>
-                只會喺你打開緊呢個網頁時，每 5 分鐘記低一次車位數，
-                儲存喺你自己部手機。用得多啲日子，圖表就會出現。
+                {fromShared
+                  ? '你個中轉已經開始收集，但呢個停車場嘅讀數仲未夠。'
+                  : '呢個網站冇後端，只會喺你打開緊網頁時每 5 分鐘記低一次，儲存喺你自己部手機。'}
+                <br/>
+                {!fromShared && '想一日 24 小時自動收集（唔使開住程式，而且所有人共享），可以喺設定部署中轉嘅定時收集。'}
               </p>
               <p className="text-[11px] text-gray-500 mt-3">
                 呢個停車場目前已記錄 <span className="font-bold text-gray-700">{prof.total}</span> 次
@@ -1739,8 +1789,11 @@
         <div className="mt-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
           {head}
           <p className="text-[10px] text-gray-400 leading-relaxed">
-            以下係你自己部手機喺開住程式期間記低嘅 {prof.total} 次讀數，唔會同其他人共享，
-            亦唔代表交通事務局嘅官方統計。取樣越多越準。
+            {fromShared
+              ? '以下係你個中轉自動收集嘅 ' + prof.total + ' 次讀數（每半個鐘一次，一日 24 小時，' +
+                '唔使開住程式都照收），所有用呢個中轉嘅人睇到同一份數據。'
+              : '以下係你自己部手機喺開住程式期間記低嘅 ' + prof.total + ' 次讀數，唔會同其他人共享。'}
+            {' 唔代表交通事務局嘅官方統計，取樣越多越準。'}
             {!scale.usesCapacity && ' 交通事務局未提供呢個停車場嘅總車位，所以繁忙程度係相對佢自己最空嗰陣計。'}
           </p>
           {daily}
@@ -2267,6 +2320,27 @@
                 <div className="text-xs font-semibold text-slate-300 mb-1">
                   <i className="fa-solid fa-stopwatch mr-1.5"></i>定時收集繁忙時間數據
                 </div>
+
+                {shared ? (
+                  <div className="mb-3 rounded-lg bg-emerald-900/50 border border-emerald-700 p-2">
+                    <div className="text-[11px] text-emerald-200 font-bold mb-0.5">
+                      <i className="fa-solid fa-circle-check mr-1"></i>中轉定時收集運作中
+                    </div>
+                    <div className="text-[10px] text-emerald-300/80 leading-relaxed">
+                      累計 {shared.samples} 次讀數，涵蓋 {shared.parks || Object.keys(shared.slots).length} 個停車場。
+                      喺 Cloudflare 上面每半個鐘自動收集，唔使開住呢個程式，所有用呢個中轉嘅人共享。
+                      {shared.updatedAt && <span><br/>最後收集：{fmtTs(shared.updatedAt)}</span>}
+                    </div>
+                  </div>
+                ) : customProxyBase() ? (
+                  <div className="mb-3 rounded-lg bg-slate-800 border border-slate-600 p-2">
+                    <div className="text-[10px] text-slate-400 leading-relaxed">
+                      <i className="fa-solid fa-circle-info mr-1"></i>
+                      你已經設定咗中轉，但佢未有定時收集數據 —— 要喺 Cloudflare 綁定 KV
+                      同開 cron（部署指南第八節）。搞掂之後就唔使靠下面嘅瀏覽器收集。
+                    </div>
+                  </div>
+                ) : null}
 
                 {!plan ? (
                   <div>

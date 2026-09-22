@@ -35,9 +35,115 @@ const DEFAULT_APPCODE = '09d43a591fba407fb862412970667de4';
  *  快取 15 秒可以減少對交通局伺服器嘅壓力，又唔會覺得數據舊咗。 */
 const CACHE_TTL_SECONDS = 15;
 
+/** 交通事務局即時車位嘅端點，定時收集同轉發都係用佢。 */
+const MAINTENANCE_URL = 'https://dsat.apigateway.data.gov.mo/car_park_maintance';
+
+/** KV 入面存累積數據嗰條 key。 */
+const HISTORY_KEY = 'busy_history_v1';
+
+/* ── 定時收集（Cron Trigger）────────────────────────────────────────
+ *
+ * 瀏覽器關咗就唔會執行任何嘢，所以喺前端收集繁忙時間數據，永遠只收到
+ * 「有人開住個網頁」嗰啲時段。呢度唔同：Cloudflare 會按 wrangler.toml
+ * 入面嘅 cron 時間表，喺佢自己部機行呢段程式，一日 24 小時，冇人開網頁
+ * 都照行。收到嘅數據存喺 KV，所有用呢個 Worker 嘅人共享同一份。
+ *
+ * 結構同前端一樣：
+ *   { "<停車場編號>": { "<星期*24+小時>": [輕型總和, 次數, 電單車總和, 次數] } }
+ * 就地平均，所以儲存量唔會隨時間增長。
+ */
+
+/** Workers 執行環境冇 DOMParser，所以要自己抽。格式係屬性式：
+ *    <Car_park_info ID="1" Car_CNT="50" MB_CNT="20" Time="..."/>
+ *  元素名同屬性名一律唔分大小寫 —— 交通局嘅大小寫寫法唔一致，
+ *  前端就係因為分大小寫而試過全部車位讀成 0。 */
+function parseCarparks(xml) {
+  const out = [];
+  const items = String(xml || '').match(/<car_park_info\b[^>]*>/gi) || [];
+  for (const tag of items) {
+    const attrs = {};
+    const re = /([A-Za-z_][\w:-]*)\s*=\s*"([^"]*)"/g;
+    let m;
+    while ((m = re.exec(tag)) !== null) attrs[m[1].toLowerCase()] = m[2];
+    const pick = (...names) => {
+      for (const n of names) {
+        const v = attrs[n.toLowerCase()];
+        if (v !== undefined && v !== '') return v;
+      }
+      return undefined;
+    };
+    const id = pick('ID', 'CP_ID', 'CAR_PARK_NO', 'NO');
+    if (!id) continue;
+    const num = (v) => {
+      if (v === undefined) return null;
+      const n = parseInt(v, 10);
+      return isNaN(n) ? null : n;
+    };
+    out.push({
+      id: String(id),
+      light: num(pick('Car_CNT', 'CAR_CNT', 'LIGHT_CAR', 'CAR')),
+      moto:  num(pick('MB_CNT', 'MO_CNT', 'MOTORCYCLE', 'MOTO')),
+    });
+  }
+  return out;
+}
+
+/** 澳門時間 (UTC+8) 嘅「星期*24+小時」。Workers 行喺 UTC，所以要自己加返 8 個鐘，
+ *  否則收集到嘅時段會同用戶睇到嘅鐘數差 8 個鐘。 */
+function macauSlot(date) {
+  const t = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  return t.getUTCDay() * 24 + t.getUTCHours();
+}
+
+function foldSamples(store, readings, date) {
+  const slot = String(macauSlot(date));
+  for (const r of readings) {
+    if (r.light === null && r.moto === null) continue;
+    const park = store[r.id] || (store[r.id] = {});
+    const cell = park[slot] || (park[slot] = [0, 0, 0, 0]);
+    if (r.light !== null) { cell[0] += r.light; cell[1] += 1; }
+    if (r.moto  !== null) { cell[2] += r.moto;  cell[3] += 1; }
+  }
+  return store;
+}
+
+async function collectOnce(env) {
+  if (!env || !env.HISTORY) {
+    return { ok: false, reason: '未綁定 KV namespace（HISTORY）' };
+  }
+  const appcode = (env && env.APPCODE) || DEFAULT_APPCODE;
+  const res = await fetch(MAINTENANCE_URL, {
+    headers: { 'Authorization': 'APPCODE ' + appcode, 'Accept': 'application/xml' },
+  });
+  if (!res.ok) return { ok: false, reason: '交通事務局回應 HTTP ' + res.status };
+
+  const readings = parseCarparks(await res.text());
+  if (!readings.length) return { ok: false, reason: '解析唔到任何停車場' };
+
+  let doc;
+  try { doc = JSON.parse(await env.HISTORY.get(HISTORY_KEY) || 'null'); } catch (e) { doc = null; }
+  if (!doc || typeof doc !== 'object' || !doc.slots) {
+    doc = { startedAt: new Date().toISOString(), samples: 0, slots: {} };
+  }
+  doc.slots = foldSamples(doc.slots, readings, new Date());
+  doc.samples = (doc.samples || 0) + 1;
+  doc.parks = Object.keys(doc.slots).length;
+  doc.updatedAt = new Date().toISOString();
+  await env.HISTORY.put(HISTORY_KEY, JSON.stringify(doc));
+  return { ok: true, parks: readings.length, samples: doc.samples };
+}
+
 /* ── 主程式 ────────────────────────────────────────────────────────── */
 
 export default {
+  /** Cloudflare 按時表叫呢個，唔需要任何人開住網頁。 */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(collectOnce(env).then((r) => {
+      if (!r.ok) console.log('[collect] 失敗：' + r.reason);
+      else console.log('[collect] 收集咗 ' + r.parks + ' 個停車場，累計 ' + r.samples + ' 次');
+    }));
+  },
+
   async fetch(request, env) {
     const origin = request.headers.get('Origin') || '';
     const cors = corsHeaders(origin);
@@ -51,7 +157,35 @@ export default {
       return fail(405, '只支援 GET 請求', cors);
     }
 
-    const target = new URL(request.url).searchParams.get('url');
+    const params = new URL(request.url).searchParams;
+
+    /* 讀返定時收集到嘅累積數據。開放畀所有准許嘅來源讀，因為呢份數據
+       本身就係要大家共享 —— 一個人收集，所有人受惠。 */
+    if (params.get('history') === '1') {
+      if (!env || !env.HISTORY) {
+        return fail(503, '呢個中轉未綁定 KV namespace，所以未有定時收集數據。' +
+                         '部署指南第九節有講點開。', cors);
+      }
+      const raw = await env.HISTORY.get(HISTORY_KEY);
+      return new Response(raw || '{"samples":0,"slots":{}}', {
+        status: 200,
+        headers: Object.assign({
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'public, max-age=300',
+        }, cors),
+      });
+    }
+
+    /* 手動觸發一次收集，方便部署完即刻驗證，唔使等半個鐘。 */
+    if (params.get('collect') === '1') {
+      const r = await collectOnce(env);
+      return new Response(JSON.stringify(r), {
+        status: r.ok ? 200 : 503,
+        headers: Object.assign({ 'Content-Type': 'application/json; charset=utf-8' }, cors),
+      });
+    }
+
+    const target = params.get('url');
     if (!target) {
       return fail(400,
         '缺少 url 參數。正確用法：' + new URL(request.url).origin +

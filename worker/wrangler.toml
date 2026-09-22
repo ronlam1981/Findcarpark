@@ -1,16 +1,28 @@
 # 用指令部署嘅設定檔。喺呢個 worker/ 資料夾入面執行：
 #
-#     npx wrangler login      # 第一次先做，會開瀏覽器叫你授權
+#     npx wrangler login                      # 第一次先做
+#     npx wrangler kv namespace create HISTORY # 開個 KV，抄低佢個 id
+#     # 將 id 填落下面 kv_namespaces 嗰度，然後：
 #     npx wrangler deploy
 #
-# 部署完會印出你個網址，形如 https://findcarpark-proxy.<你嘅帳號>.workers.dev
-# 唔想用指令？照跟 README.md 喺 Cloudflare 網頁度複製貼上一樣得。
+# 唔想用指令？照跟 README.md 喺 Cloudflare 網頁度設定一樣得。
 
 name = "findcarpark-proxy"
 main = "worker.js"
 compatibility_date = "2026-09-22"
 workers_dev = true
 
-# APPCODE 建議用 Secret 存放，唔好寫死喺呢度：
+# 每半個鐘收集一次全部停車場嘅車位數。Cloudflare 喺佢自己部機行，
+# 唔需要任何人開住網頁。免費計劃每日 48 次寫入，遠低於 1,000 次上限。
+[triggers]
+crons = ["*/30 * * * *"]
+
+# 累積數據存喺呢個 KV namespace。開完之後將 id 填落嚟。
+# 冇綁定都唔會壞 —— 中轉照行，只係冇定時收集。
+[[kv_namespaces]]
+binding = "HISTORY"
+id = "喺呢度填你自己嘅-KV-namespace-id"
+
+# APPCODE 建議用 Secret 存放，唔好寫死：
 #     npx wrangler secret put APPCODE
 # 冇設定就會用 worker.js 入面嘅預設值。

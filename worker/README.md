@@ -117,7 +117,92 @@ https://你個名.workers.dev/?url=https%3A%2F%2Fdsat.apigateway.data.gov.mo%2Fc
 
 ---
 
-## 八、萬一部署唔到都唔使驚
+## 八、開啟 24 小時定時收集（強烈推薦）
+
+呢步做完，繁忙時間數據就**唔再靠你開住程式** —— Cloudflare 會每半個鐘
+自己收集一次，一日 24 小時，而且**所有用你個中轉嘅人共享同一份數據**。
+
+免費額度計過：每日 48 次寫入，上限 1,000 次，**用咗 4.8%**。
+
+### 第 1 步：開一個 KV 儲存空間
+
+**網頁版：**
+1. Cloudflare 左邊選單 → **Storage & Databases** → **KV**
+2. 㩒 **Create Instance**（或 **Create a namespace**）
+3. Namespace name 填：`findcarpark-history`
+4. 㩒 **Add**
+
+**指令版：**
+```bash
+npx wrangler kv namespace create HISTORY
+```
+會印出一個 `id`，抄低佢填落 `wrangler.toml`。
+
+### 第 2 步：綁定落你個 Worker
+
+**網頁版：**
+1. 返去你個 Worker → **Settings** → **Bindings**
+2. **Add** → 揀 **KV namespace**
+3. 填：
+   - **Variable name：** `HISTORY`  ← 一定要係大楷 HISTORY
+   - **KV namespace：** 揀返頭先開嗰個 `findcarpark-history`
+4. **Deploy**
+
+> ⚠️ Variable name 打錯（例如 `history` 細楷）就唔會生效。
+
+### 第 3 步：開定時觸發
+
+**網頁版：**
+1. Worker → **Settings** → **Triggers**（或 **Cron Triggers**）
+2. **Add Cron Trigger**
+3. 填：
+   ```
+   */30 * * * *
+   ```
+   （即係每 30 分鐘一次）
+4. **Add** / **Deploy**
+
+**指令版：** `wrangler.toml` 已經寫好，`npx wrangler deploy` 就得。
+
+### 第 4 步：即刻試一次，唔使等半個鐘
+
+喺瀏覽器打開（換成你條網址）：
+
+```
+https://你個名.workers.dev/?collect=1
+```
+
+| 見到 | 即係 |
+|---|---|
+| `{"ok":true,"parks":91,"samples":1}` | ✅ 成功，已經收集咗一次 |
+| `{"ok":false,"reason":"未綁定 KV namespace（HISTORY）"}` | 第 2 步未做好，或者變數名打錯 |
+| `{"ok":false,"reason":"交通事務局回應 HTTP ..."}` | 上游出事，同 KV 無關 |
+
+再打開呢條睇累積數據：
+
+```
+https://你個名.workers.dev/?history=1
+```
+
+### 第 5 步：喺程式度確認
+
+打開網站 → 齒輪 → 應該見到綠色：
+
+> ✅ **中轉定時收集運作中**
+> 累計 N 次讀數，涵蓋 91 個停車場。
+
+之後任何停車場嘅「繁忙時間」圖表，右上角會標住「**24 小時收集**」而唔係「本機紀錄」。
+
+### 收集到嘅數據係點樣？
+
+- 結構：每個停車場 × 每個「星期幾＋幾點」時段，存住輕型車同電單車嘅**平均車位**
+- 就地平均，所以**儲存量唔會隨時間增長**（一年後同一星期後差唔多大）
+- 時區用**澳門時間**（Worker 行喺 UTC，程式碼有自己加返 8 個鐘）
+- 冇個人資料，純粹係公開停車場嘅車位數字
+
+---
+
+## 九、萬一部署唔到都唔使驚
 
 個程式**仲有 8 條後備途徑**。冇咗你個 Worker，佢會自動跌返落公共中轉，
 照樣運作 —— 只係冇咁穩陣。所以部署 Worker 係**淨賺**，冇下行風險。
