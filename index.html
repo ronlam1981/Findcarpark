@@ -2214,12 +2214,77 @@
       return { count: pool.length, st: st };
     }, [mergedParks, selectedRegion]);
 
+    /* Google 同 Apple Maps 嗰兩條網址係真正嘅「Universal Link」——手機
+       系統喺瀏覽器發出任何網絡請求之前就攔截咗，即時開返 App，完全唔使等。
+       高德嗰條 uri.amap.com 唔係 Universal Link，佢係一版真.網頁：要先落
+       單去攞返個網頁、載入、先至輪到佢自己嘅程式判斷開唔開到 App —— 用戶
+       反映「按咗好耐先顯示網頁版」，根源就係呢版慢嘅轉介頁本身。
+       修法：跳過嗰版轉介頁，自己直接試 App 嘅原生連結（唔使網絡），
+       淨係響冇成功轉去 App 嗰陣（短暫等咗都仲喺呢頁）先至開網頁版做後備，
+       而且用新分頁開，唔會搶走／取代緊用緊嘅找車位小助手本身。 */
+    function isIOSDevice() {
+      return /iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+    }
+
+    /* 試 appUrl（例如自訂 scheme，唔支援嘅話手機瀏覽器會靜靜哋乜都唔做，
+       唔會跳走／唔會顯示錯誤），過咗 fallbackMs 之後如果都仲喺呢一頁
+       （即係話冇成功轉去 App），先開 webUrl 做後備。用戶切咗去 App
+       嘅話（document.hidden 變 true）就取消後備，唔使畫蛇添足。 */
+    function openAppThenFallback(appUrl, webUrl, fallbackMs, navigate) {
+      if (!appUrl || appUrl === webUrl) {
+        window.open(webUrl, '_blank');
+        return;
+      }
+      var done = false;
+      function cleanup() {
+        done = true;
+        document.removeEventListener('visibilitychange', onHide);
+      }
+      function onHide() {
+        if (document.hidden) cleanup();   /* App 開咗，用戶已經走咗去嗰邊 */
+      }
+      document.addEventListener('visibilitychange', onHide);
+      setTimeout(function() {
+        if (!done && !document.hidden) window.open(webUrl, '_blank');
+        cleanup();
+      }, fallbackMs || 1200);
+      /* navigate 參數淨係畀測試用嚟攔截（jsdom 唔准改 window.location），
+         正式運行時永遠冇人傳呢個參數，行為同直接寫 window.location.href 一樣。 */
+      (navigate || function(u) { window.location.href = u; })(appUrl);
+    }
+
+    /* 純網址砌法，抽出嚟方便獨立測試（唔使掂 window.location）。 */
+    function googleMapUrls(lat, lng) {
+      return {
+        app: 'comgooglemaps://?daddr=' + lat + ',' + lng + '&directionsmode=driving',
+        web: 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng
+      };
+    }
+    function appleMapUrl(lat, lng) {
+      return 'https://maps.apple.com/?daddr=' + lat + ',' + lng;
+    }
+    function amapUrls(lat, lng, label, iOS) {
+      var scheme = iOS ? 'iosamap' : 'androidamap';
+      return {
+        app: scheme + '://navi?sourceApplication=findcarpark&poiname=' +
+          encodeURIComponent(label || '') + '&lat=' + lat + '&lon=' + lng + '&dev=0&style=2',
+        web: 'https://uri.amap.com/navigation?to=' + lng + ',' + lat + ',' +
+          encodeURIComponent(label || '') + '&mode=car'
+      };
+    }
+
     function openMap(type, lat, lng, name) {
-      var url = '';
-      if (type === 'google') url = 'https://www.google.com/maps/dir/?api=1&destination=' + lat + ',' + lng;
-      else if (type === 'apple') url = 'http://maps.apple.com/?daddr=' + lat + ',' + lng;
-      else if (type === 'amap') url = 'https://uri.amap.com/navigation?to=' + lng + ',' + lat + ',' + encodeURIComponent(name) + '&mode=car';
-      window.open(url, '_blank');
+      if (type === 'google') {
+        var g = googleMapUrls(lat, lng);
+        openAppThenFallback(g.app, g.web, 1200);
+      } else if (type === 'apple') {
+        /* maps.apple.com 本身已經係 Universal Link，冇獨立嘅 App scheme，
+           一條網址走天下，OS 會喺攔截層面即時處理，唔使我哋自己再等。 */
+        window.open(appleMapUrl(lat, lng), '_blank');
+      } else if (type === 'amap') {
+        var a = amapUrls(lat, lng, name, isIOSDevice());
+        openAppThenFallback(a.app, a.web, 1200);
+      }
     }
 
     function connBadge() {
