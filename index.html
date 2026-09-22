@@ -58,6 +58,8 @@
   const LS_BASE_KEY  = 'mcp_base_v2';
   const LS_BASE_TS   = 'mcp_base_ts_v2';
   const LS_PROXY_KEY = 'mcp_custom_proxy';
+  const LS_HISTORY_KEY = 'mcp_history_v1';
+  const LS_HISTORY_OFF = 'mcp_history_off';
   const HALF_YEAR_MS = 180 * 24 * 60 * 60 * 1000;
   const REALTIME_INTERVAL = 30000;
   const FETCH_TIMEOUT = 8000;
@@ -653,6 +655,165 @@
     return '#059669';
   }
 
+  /* ─── Busy-hour history ──────────────────────────────────────────────
+     There is no server, so nothing can log occupancy around the clock. What
+     this does is record what the app already fetches, while it is open, on
+     this device only. A pattern therefore builds up over days of use and is
+     never shared between phones — the UI says so, and shows the sample count
+     behind every figure rather than presenting a thin average as fact.
+
+     Shape: { "<carpark id>": { "<weekday*24+hour>": [sumLight, nLight, sumMoto, nMoto] } }
+     A weekday-hour slot is the smallest unit that answers both "每日" and
+     "每周", and averaging in place keeps the store flat instead of growing
+     with every reading. */
+
+  var SLOTS = 7 * 24;
+  var RECORD_EVERY_MS = 5 * 60 * 1000;   /* at most one sample per slot per 5 min */
+  var MIN_SAMPLES = 8;                   /* below this, show "collecting" not a chart */
+  var HISTORY_MAX_BYTES = 2 * 1024 * 1024;
+
+  function slotOf(date) {
+    return date.getDay() * 24 + date.getHours();
+  }
+
+  function loadHistory() {
+    try {
+      var raw = localStorage.getItem(LS_HISTORY_KEY);
+      if (!raw) return {};
+      var o = JSON.parse(raw);
+      return (o && typeof o === 'object') ? o : {};
+    } catch (e) { return {}; }
+  }
+
+  function saveHistory(h) {
+    try {
+      var raw = JSON.stringify(h);
+      if (raw.length > HISTORY_MAX_BYTES) return 'too_big';
+      localStorage.setItem(LS_HISTORY_KEY, raw);
+      return 'ok';
+    } catch (e) { return 'quota'; }
+  }
+
+  function historyEnabled() {
+    try { return localStorage.getItem(LS_HISTORY_OFF) !== '1'; } catch (e) { return true; }
+  }
+  function setHistoryEnabled(on) {
+    try {
+      if (on) localStorage.removeItem(LS_HISTORY_OFF);
+      else localStorage.setItem(LS_HISTORY_OFF, '1');
+    } catch (e) {}
+  }
+
+  /* Folds one round of readings into the store. Returns the updated store so
+     the caller decides when to persist. */
+  function addSamples(hist, readings, date) {
+    var slot = String(slotOf(date || new Date()));
+    for (var i = 0; i < readings.length; i++) {
+      var r = readings[i];
+      if (!r || !r.no) continue;
+      var lightKnown = (r.light !== null && r.light !== undefined);
+      var motoKnown  = (r.moto  !== null && r.moto  !== undefined);
+      if (!lightKnown && !motoKnown) continue;
+
+      var park = hist[r.no] || (hist[r.no] = {});
+      var cell = park[slot] || (park[slot] = [0, 0, 0, 0]);
+      if (lightKnown) { cell[0] += r.light; cell[1] += 1; }
+      if (motoKnown)  { cell[2] += r.moto;  cell[3] += 1; }
+    }
+    return hist;
+  }
+
+  function countSamples(hist) {
+    var n = 0;
+    for (var id in hist) {
+      if (!Object.prototype.hasOwnProperty.call(hist, id)) continue;
+      for (var slot in hist[id]) {
+        if (!Object.prototype.hasOwnProperty.call(hist[id], slot)) continue;
+        n += Math.max(hist[id][slot][1], hist[id][slot][3]);
+      }
+    }
+    return n;
+  }
+
+  /* One carpark's profile for one vehicle type: the 24-hour shape, the
+     weekday × hour grid, and how much each figure rests on. */
+  function profileFor(hist, parkId, type) {
+    var park = (hist && hist[parkId]) || {};
+    var sumIdx = (type === 'moto') ? 2 : 0;
+    var nIdx   = (type === 'moto') ? 3 : 1;
+
+    var daily = [], weekly = [], h, d;
+    for (h = 0; h < 24; h++) daily.push({ sum: 0, n: 0 });
+    for (d = 0; d < 7; d++) {
+      var row = [];
+      for (h = 0; h < 24; h++) row.push({ sum: 0, n: 0 });
+      weekly.push(row);
+    }
+
+    var total = 0;
+    for (var key in park) {
+      if (!Object.prototype.hasOwnProperty.call(park, key)) continue;
+      var slot = parseInt(key, 10);
+      if (isNaN(slot) || slot < 0 || slot >= SLOTS) continue;
+      var cell = park[key];
+      var sm = cell[sumIdx], n = cell[nIdx];
+      if (!n) continue;
+      var dow = Math.floor(slot / 24), hr = slot % 24;
+      daily[hr].sum += sm;  daily[hr].n += n;
+      weekly[dow][hr].sum += sm; weekly[dow][hr].n += n;
+      total += n;
+    }
+
+    function avg(c) { return c.n ? c.sum / c.n : null; }
+    return {
+      total: total,
+      daily: daily.map(function(c) { return { avg: avg(c), n: c.n }; }),
+      weekly: weekly.map(function(row) {
+        return row.map(function(c) { return { avg: avg(c), n: c.n }; });
+      })
+    };
+  }
+
+  /* How hard it is to park, 0 = empty, 1 = full. Capacity is the honest
+     reference when the feed publishes one; otherwise the carpark's own best
+     observed availability stands in, which the caption has to say. */
+  function busyScale(profile, capacity) {
+    var observed = 0;
+    profile.weekly.forEach(function(row) {
+      row.forEach(function(c) { if (c.avg !== null && c.avg > observed) observed = c.avg; });
+    });
+    var usesCapacity = (typeof capacity === 'number' && capacity > 0 && capacity >= observed);
+    var ref = usesCapacity ? capacity : observed;
+    return {
+      usesCapacity: usesCapacity,
+      ref: ref,
+      busy: function(avgFree) {
+        if (avgFree === null || avgFree === undefined || !ref) return null;
+        var b = 1 - (avgFree / ref);
+        return b < 0 ? 0 : (b > 1 ? 1 : b);
+      }
+    };
+  }
+
+  /* Sequential single-hue ramp (blue 100→650), lightness monotonically
+     decreasing, so darker always reads as busier. */
+  var BUSY_RAMP = ['#cde2fb', '#9ec5f4', '#5598e7', '#256abf', '#104281'];
+  function busyFill(b) {
+    if (b === null || b === undefined) return '#f3f4f6';
+    var i = Math.floor(b * BUSY_RAMP.length);
+    if (i >= BUSY_RAMP.length) i = BUSY_RAMP.length - 1;
+    if (i < 0) i = 0;
+    return BUSY_RAMP[i];
+  }
+  /* Cells past the midpoint of the ramp need light text on them. */
+  function busyInk(b) {
+    return (b !== null && b !== undefined && b >= 0.6) ? '#ffffff' : '#1f2937';
+  }
+
+  var DOW_LABELS = ['日', '一', '二', '三', '四', '五', '六'];
+  /* Monday first, the way a week is read here. */
+  var DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
   /* ─── localStorage helpers ─── */
   function loadStoredBase() {
     try {
@@ -734,6 +895,11 @@
     var [activeNavId, setActiveNavId]         = useState(null);
     var [viewMode, setViewMode]               = useState('list');
     var [userAccuracy, setUserAccuracy]       = useState(null);
+    var [history, setHistory]                 = useState(loadHistory);
+    var [recording, setRecording]             = useState(historyEnabled);
+    var [historyWarn, setHistoryWarn]         = useState('');
+    var [busyPick, setBusyPick]               = useState(null);
+    var lastRecordRef = useRef(0);
     var [mapError, setMapError]               = useState('');
     var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null), accRef = useRef(null);
     var mapElRef = useRef(null), fitKeyRef = useRef('');
@@ -780,6 +946,23 @@
           setRealtimeArr(arr);
           setLastRtTs(new Date());
           setConnStatus('ok');
+
+          /* Fold this round into the local busy-hour history, at most once
+             every few minutes so a session left open does not drown the
+             average in readings from one afternoon. */
+          if (historyEnabled()) {
+            var now = Date.now();
+            if (now - lastRecordRef.current >= RECORD_EVERY_MS) {
+              lastRecordRef.current = now;
+              setHistory(function(prev) {
+                var next = addSamples(Object.assign({}, prev), arr, new Date());
+                var r = saveHistory(next);
+                if (r === 'quota') setHistoryWarn('瀏覽器儲存空間滿，繁忙時間紀錄已停止累積。');
+                else if (r === 'too_big') setHistoryWarn('繁忙時間紀錄已達上限，請喺設定清除舊紀錄。');
+                return next;
+              });
+            }
+          }
           console.log('[Realtime OK] parsed', arr.length, 'parks. Sample:', arr[0]);
         })
         .catch(function(e) {
@@ -931,6 +1114,45 @@
         .then(function() { setSearchLoading(false); });
     }, [searchText, parksBase, handleSuggClick]);
 
+    var historyCount = useMemo(function() { return countSamples(history); }, [history]);
+
+    var toggleRecording = useCallback(function() {
+      var next = !recording;
+      setHistoryEnabled(next);
+      setRecording(next);
+    }, [recording]);
+
+    var clearHistory = useCallback(function() {
+      if (!window.confirm('確定清除所有繁忙時間紀錄？呢啲數據只存喺呢部裝置，清咗唔會復原。')) return;
+      try { localStorage.removeItem(LS_HISTORY_KEY); } catch (e) {}
+      setHistory({});
+      setHistoryWarn('');
+      setBusyPick(null);
+    }, []);
+
+    /* The readings belong to whoever collected them, so they have to be able
+       to take them away. */
+    var exportHistory = useCallback(function() {
+      var payload = JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        note: '澳門找車位小助手 — 本機繁忙時間紀錄。鍵為停車場編號，再為「星期*24+小時」時段，值為 [輕型車總和, 次數, 電單車總和, 次數]。',
+        slots: history
+      }, null, 2);
+      try {
+        var blob = new Blob([payload], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'findcarpark-busy-' + new Date().toISOString().slice(0, 10) + '.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+      } catch (e) {
+        window.prompt('請手動複製：', payload);
+      }
+    }, [history]);
+
     /* Copy the whole failure chain, so it can be pasted back verbatim
        instead of retyped from a phone screen. */
     var copyDiag = useCallback(function() {
@@ -1010,6 +1232,166 @@
       setRadius(1000);
       setSortBy('distance');
     }, []);
+
+    /* Busy-hour panel for one carpark: the 24-hour shape and the weekday ×
+       hour grid, both built from this device's own readings. Every figure is
+       shown with the number of samples behind it, because early on there are
+       very few and a confident-looking chart would be misleading. */
+    function renderBusyPanel(park) {
+      if (!park) return null;
+      var type = (vehicleType === 'moto') ? 'moto' : 'light';
+      var typeLabel = (type === 'moto') ? '電單車' : '輕型車';
+      var prof = profileFor(history, park.id, type);
+      var cap = park.capacity ? park.capacity[type] : null;
+      var scale = busyScale(prof, cap);
+
+      var maxAvg = 0;
+      prof.daily.forEach(function(c) { if (c.avg !== null && c.avg > maxAvg) maxAvg = c.avg; });
+
+      var now = new Date();
+      var nowDow = now.getDay(), nowHour = now.getHours();
+
+      var head = (
+        <div className="flex items-baseline justify-between mb-1">
+          <h4 className="text-sm font-bold text-gray-800">
+            <i className="fa-solid fa-chart-column mr-2 text-blue-600"></i>繁忙時間
+          </h4>
+          <span className="text-[10px] text-gray-400">{typeLabel}‧本機紀錄</span>
+        </div>
+      );
+
+      if (prof.total < MIN_SAMPLES) {
+        return (
+          <div className="mt-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+            {head}
+            <div className="text-center py-6">
+              <i className="fa-solid fa-hourglass-half text-2xl text-gray-200 block mb-2"></i>
+              <p className="text-sm text-gray-500 font-medium">資料收集中</p>
+              <p className="text-[11px] text-gray-400 mt-2 leading-relaxed">
+                本程式冇後端，唔可以全日自動記錄。<br/>
+                只會喺你打開緊呢個網頁時，每 5 分鐘記低一次車位數，
+                儲存喺你自己部手機。用得多啲日子，圖表就會出現。
+              </p>
+              <p className="text-[11px] text-gray-500 mt-3">
+                呢個停車場目前已記錄 <span className="font-bold text-gray-700">{prof.total}</span> 次
+                （需要 {MIN_SAMPLES} 次先開始顯示）
+              </p>
+            </div>
+          </div>
+        );
+      }
+
+      /* 24-hour shape. One series, so no legend: the caption names it. */
+      var daily = (
+        <div className="mt-3">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[11px] font-semibold text-gray-600">每日時段</span>
+            <span className="text-[10px] text-gray-400">平均可用車位（越矮＝越難泊）</span>
+          </div>
+          <div className="flex items-end h-24 border-b border-gray-200">
+            {prof.daily.map(function(c, h) {
+              var pct = (c.avg !== null && maxAvg > 0) ? Math.max(3, (c.avg / maxAvg) * 100) : 0;
+              var isNow = (h === nowHour);
+              return (
+                <button key={h}
+                  onClick={function(){ setBusyPick({ d: null, h: h, c: c }); }}
+                  className="flex-1 mx-px flex flex-col justify-end h-full"
+                  title={h + ':00'}>
+                  {c.avg === null ? (
+                    <div className="w-full bg-gray-100" style={{height:'2px'}}></div>
+                  ) : (
+                    <div className="w-full rounded-t"
+                      style={{ height: pct + '%', background: isNow ? '#104281' : '#2a78d6' }}></div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex text-[9px] text-gray-400 mt-1">
+            {[0,6,12,18].map(function(h, i) {
+              return <span key={h} className={i === 0 ? 'flex-1' : 'flex-1 text-center'}
+                       style={i === 3 ? {textAlign:'right'} : null}>{h}:00</span>;
+            })}
+          </div>
+        </div>
+      );
+
+      /* Weekday × hour grid, sequential single hue, darker = busier. */
+      var weekly = (
+        <div className="mt-4">
+          <div className="flex items-baseline justify-between mb-1">
+            <span className="text-[11px] font-semibold text-gray-600">每周分佈</span>
+            <span className="text-[10px] text-gray-400">
+              {scale.usesCapacity ? '佔用率' : '相對繁忙程度'}
+            </span>
+          </div>
+          {prof.weekly && DOW_ORDER.map(function(d) {
+            return (
+              <div key={d} className="flex items-center mb-px">
+                <span className="w-4 shrink-0 text-[9px] text-gray-400 text-center">{DOW_LABELS[d]}</span>
+                <div className="flex-1 flex">
+                  {prof.weekly[d].map(function(c, h) {
+                    var b = scale.busy(c.avg);
+                    var isNow = (d === nowDow && h === nowHour);
+                    return (
+                      <button key={h}
+                        onClick={function(){ setBusyPick({ d: d, h: h, c: c }); }}
+                        className="flex-1 mx-px"
+                        style={{ height:'13px', background: busyFill(b),
+                                 outline: isNow ? '1.5px solid #111827' : 'none',
+                                 outlineOffset: '-1.5px' }}
+                        title={DOW_LABELS[d] + ' ' + h + ':00'}></button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+          <div className="flex items-center mt-2 text-[9px] text-gray-400">
+            <span className="w-4 shrink-0"></span>
+            <span className="mr-1">易泊</span>
+            {BUSY_RAMP.map(function(hex) {
+              return <span key={hex} className="w-4 h-2.5 mr-px" style={{background:hex}}></span>;
+            })}
+            <span className="ml-1">難泊</span>
+            <span className="ml-3 w-3 h-2.5 mr-1" style={{background:'#f3f4f6'}}></span>
+            <span>未有紀錄</span>
+          </div>
+        </div>
+      );
+
+      var pick = busyPick;
+      var readout = pick ? (
+        <div className="mt-3 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-[11px] text-blue-900">
+          <span className="font-bold">
+            {pick.d === null ? '每日 ' : '星期' + DOW_LABELS[pick.d] + ' '}
+            {pick.h}:00–{pick.h + 1}:00
+          </span>
+          {pick.c.avg === null
+            ? <span className="ml-2 text-blue-700">未有紀錄</span>
+            : <span className="ml-2">
+                平均可用 <span className="font-bold">{Math.round(pick.c.avg)}</span> 個{typeLabel}車位
+                <span className="text-blue-600">（{pick.c.n} 次取樣）</span>
+              </span>}
+        </div>
+      ) : (
+        <p className="mt-3 text-[10px] text-gray-400">㩒任何一格睇實際數字同取樣次數。</p>
+      );
+
+      return (
+        <div className="mt-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
+          {head}
+          <p className="text-[10px] text-gray-400 leading-relaxed">
+            以下係你自己部手機喺開住程式期間記低嘅 {prof.total} 次讀數，唔會同其他人共享，
+            亦唔代表交通事務局嘅官方統計。取樣越多越準。
+            {!scale.usesCapacity && ' 交通事務局未提供呢個停車場嘅總車位，所以繁忙程度係相對佢自己最空嗰陣計。'}
+          </p>
+          {daily}
+          {weekly}
+          {readout}
+        </div>
+      );
+    }
 
     /* One carpark card. A plain render function rather than a component so
        it can be dropped both under the search box and in the list without
@@ -1496,6 +1878,39 @@
               </div>
 
               <div className="bg-slate-700 rounded-lg p-3 mb-3">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="text-xs font-semibold text-slate-300">繁忙時間紀錄</div>
+                  <button onClick={toggleRecording}
+                    className={'px-2 py-0.5 rounded-full text-[10px] font-bold transition-colors ' +
+                      (recording ? 'bg-emerald-600 text-white' : 'bg-slate-500 text-slate-200')}>
+                    {recording ? '已開啟' : '已關閉'}
+                  </button>
+                </div>
+                <div className="text-[10px] text-slate-400 mb-2 leading-relaxed">
+                  開住程式期間每 5 分鐘記低一次各停車場車位數，儲存喺你自己部手機，
+                  用嚟計出每日／每周繁忙時間。唔會上傳，唔會同其他人共享。
+                </div>
+                <div className="text-[10px] text-slate-400 mb-2">
+                  已記錄：<span className="font-bold text-slate-200">{historyCount}</span> 次讀數
+                </div>
+                {historyWarn && (
+                  <div className="mb-2 text-[10px] text-amber-300">{historyWarn}</div>
+                )}
+                <div className="flex space-x-2">
+                  <button onClick={exportHistory}
+                    disabled={historyCount === 0}
+                    className="flex-1 py-2 bg-slate-600 hover:bg-slate-500 disabled:opacity-40 rounded-lg text-xs font-medium transition-colors">
+                    <i className="fa-solid fa-download mr-1"></i>匯出
+                  </button>
+                  <button onClick={clearHistory}
+                    disabled={historyCount === 0}
+                    className="flex-1 py-2 bg-slate-600 hover:bg-slate-500 disabled:opacity-40 rounded-lg text-xs font-medium transition-colors">
+                    <i className="fa-solid fa-trash mr-1"></i>清除紀錄
+                  </button>
+                </div>
+              </div>
+
+              <div className="bg-slate-700 rounded-lg p-3 mb-3">
                 <div className="text-xs font-semibold text-slate-300 mb-1">自設中轉網址（進階）</div>
                 <div className="text-[10px] text-slate-400 mb-2">
                   本程式係純靜態網站，要借中轉服務先讀到交通局 API。<br/>
@@ -1612,6 +2027,7 @@
                       className="mt-2 w-full py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors">
                       <i className="fa-solid fa-location-dot mr-1"></i>睇吓呢個停車場附近仲有咩
                     </button>
+                    {renderBusyPanel(focusedPark)}
                   </div>
                 ) : (
                   <div className="text-center text-gray-400 py-8 bg-gray-50 rounded-2xl">
