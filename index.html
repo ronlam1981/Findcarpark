@@ -705,6 +705,20 @@
     return Math.max(best, addr, reg);
   }
 
+  /* Pressing 搜尋 has to decide between "they named a carpark" and "they
+     named a place". Any positive score used to count as a carpark, so a
+     street like 大興街 matched some carpark's address and the place lookup
+     never ran. Only a match on the carpark's own name decides it; the
+     weak any-order band (≤200) does not count either. */
+  function bestNameMatch(parks, query) {
+    var best = null, bestScore = 0;
+    for (var i = 0; i < parks.length; i++) {
+      var sc = fuzzyScore(query, parks[i].name);
+      if (sc > 200 && sc > bestScore) { bestScore = sc; best = parks[i]; }
+    }
+    return best;
+  }
+
   function searchParks(parks, query, limit) {
     var scored = [];
     for (var i = 0; i < parks.length; i++) {
@@ -876,6 +890,13 @@
      gaps are the honest part of the picture. */
 
   var COLLECT_EVERY_MS = 30 * 60 * 1000;
+  var RADIUS_OPTIONS = [
+    { m: 500,      label: '500米' },
+    { m: 1000,     label: '1公里' },
+    { m: 2000,     label: '2公里' },
+    { m: Infinity, label: '不限' }
+  ];
+
   var COLLECT_OPTIONS = [
     { days: 1, label: '1 日' },
     { days: 3, label: '3 日' },
@@ -1170,6 +1191,7 @@
     var [suggestions, setSuggestions]         = useState([]);
     var [showSugg, setShowSugg]               = useState(false);
     var [searchLoading, setSearchLoading]     = useState(false);
+    var [searchMsg, setSearchMsg]             = useState('');
     var [showSettings, setShowSettings]       = useState(false);
     var [showDiag, setShowDiag]               = useState(false);
     var [statsOpen, setStatsOpen]             = useState(function() {
@@ -1374,6 +1396,7 @@
 
     var clearFocus = useCallback(function() {
       setFocusParkId(null);
+      setSearchMsg('');
       setSearchText('');
       setSuggestions([]);
       setShowSugg(false);
@@ -1381,30 +1404,42 @@
 
     var handleSearchSubmit = useCallback(function() {
       setShowSugg(false);
-      if (!searchText.trim()) return;
-      var hits = searchParks(parksBase, searchText, 1);
-      if (hits.length) {
-        handleSuggClick(hits[0]);
-        return;
-      }
+      setSearchMsg('');
+      var q = searchText.trim();
+      if (!q) return;
+
+      var named = bestNameMatch(parksBase, q);
+      if (named) { handleSuggClick(named); return; }
+
+      /* Not a carpark name, so treat it as a place: find where it is and
+         show what is parked around it. */
       setFocusParkId(null);
       if (viewMode === 'fav') setViewMode('list');
       setSearchLoading(true);
       var nomUrl = 'https://nominatim.openstreetmap.org/search?q=' +
-        encodeURIComponent(searchText + ' 澳門') +
+        encodeURIComponent(q + ' 澳門') +
         '&format=json&limit=1&countrycodes=mo';
       fetch(nomUrl, { headers: { 'Accept-Language': 'zh' } })
-        .then(function(r) { return r.json(); })
+        .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP_' + r.status)); })
         .then(function(data) {
           if (data && data.length > 0) {
             var item = data[0];
             setUserLocation({ lat: parseFloat(item.lat), lng: parseFloat(item.lon) });
-            setLocationLabel('地標：' + (item.display_name.split(',')[0] || searchText));
+            setLocationLabel('地點：' + (item.display_name.split(',')[0] || q));
+            setUserAccuracy(null);
             setSelectedRegion('全部');
             setRadius(1000);
+            setSortBy('distance');
+            setSearchMsg('');
+          } else {
+            /* Saying nothing here was the old behaviour: you pressed 搜尋
+               and the screen simply did not change. */
+            setSearchMsg('搵唔到「' + q + '」呢個地點。試下打停車場名，或者街道全名（例如「大興街」→「氹仔大興街」）。');
           }
         })
-        .catch(function() {})
+        .catch(function() {
+          setSearchMsg('搵地點failed，可能係網絡問題。可以改為直接打停車場名。');
+        })
         .then(function() { setSearchLoading(false); });
     }, [searchText, parksBase, handleSuggClick, viewMode]);
 
@@ -2560,6 +2595,13 @@
                   搜尋
                 </button>
               </div>
+              {searchMsg && (
+                <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 flex items-start">
+                  <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
+                  <span>{searchMsg}</span>
+                </div>
+              )}
+
               {showSugg && suggestions.length > 0 && (
                 <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-gray-200 rounded-xl shadow-xl z-50 overflow-hidden">
                   {suggestions.map(function(s) {
@@ -2649,6 +2691,31 @@
                 so that one stays. */}
             {viewMode !== 'fav' && (
             <div className="mb-3">
+              {/* The empty state used to tell people to "調整搜尋範圍" when
+                  there was no control to adjust it with: the radius was only
+                  ever set in code. */}
+              {userLocation && (
+                <div className="mb-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">搜尋範圍</label>
+                    <span className="text-[10px] text-gray-400 truncate ml-2">{locationLabel || '已定位'}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {RADIUS_OPTIONS.map(function(o) {
+                      return (
+                        <button key={o.label} onClick={function(){ setRadius(o.m); }}
+                          className={'py-2 text-xs rounded-xl border transition-colors ' +
+                            (radius === o.m
+                              ? 'bg-emerald-50 border-emerald-500 text-emerald-700 font-bold'
+                              : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50')}>
+                          {o.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">區域查詢</label>
               <div className="flex flex-wrap gap-1.5">
                 {regions.map(function(reg) {
@@ -2939,8 +3006,16 @@
               {displayedParks.length === 0 && parksBase.length > 0 && !rtLoading && (
                 <div className="text-center text-gray-400 py-16">
                   <i className="fa-solid fa-square-parking text-4xl mb-3 block text-gray-200"></i>
-                  <p className="text-sm">無符合條件的停車場</p>
-                  <p className="text-xs mt-1">請嘗試調整搜尋範圍或區域篩選</p>
+                  <p className="text-sm">
+                    {userLocation && radius !== Infinity
+                      ? '呢個範圍內冇停車場'
+                      : '無符合條件的停車場'}
+                  </p>
+                  <p className="text-xs mt-1">
+                    {userLocation && radius !== Infinity
+                      ? '上面「搜尋範圍」揀大啲（例如 2 公里或不限）'
+                      : '請嘗試調整區域篩選'}
+                  </p>
                 </div>
               )}
             </div>
