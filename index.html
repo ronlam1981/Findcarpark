@@ -94,18 +94,53 @@
      thresholds fall in the water between them, so the assignment is
      unambiguous without inventing an administrative label the data does
      not carry. */
+  /* 石排灣（澳門人慣常當佢屬路環）啱好跌落氹仔同路氹城之間嗰個緯度帶，
+     所以純粹靠緯度分嘅四大島區，會將佢分錯做「路氹城」。緯度帶只反映
+     地理位置嘅粗略範圍，唔反映澳門人實際點分地段。
+
+     所以呢度改為：先攞交通事務局提供嘅真實地址／名稱，撞下有冇熟悉嘅
+     地段名（呢啲名一早已經確立，唔係我哋自己作出嚟嘅），撞到就用嗰個
+     分類；撞唔到先退返用緯度帶做保底（例如地址空白，或者出現咗一個
+     未列入嘅新街名）。keywords 要由專門到廣泛咁排，等「路氹城」入面
+     嘅「氹」字唔會搶咗「氹仔」嘅比對。
+
+     呢個表冇辦法對住 data.gov.mo 嘅 91 個停車場實際地址逐個核實過
+     （呢個環境連唔到嗰個 API），如果見到邊個停車場分錯咗地段，請話低
+     個名，可以加返個關鍵字入嚟。 */
+  var ZONE_KEYWORDS = [
+    ['港珠澳大橋',       ['港珠澳大橋']],
+    ['路環',            ['路環', '石排灣', '黑沙', '九澳', '譚公', '荔枝碗', '疊石塘']],
+    ['路氹城 / 澳大',    ['路氹', '連貫公路', '官也角', '蓮花', '澳大', '橫琴']],
+    ['氹仔',            ['氹仔', '大興', '黑橋', '北安', '馬場', '巴波沙']],
+    ['下環 / 內港 / 新馬路', ['下環', '內港', '新馬路', '媽閣', '沙梨頭']],
+    ['新口岸 / 皇朝',     ['新口岸', '宋玉生', '孫逸仙', '皇朝', '外港']],
+    ['荷蘭園 / 東望洋',   ['荷蘭園', '東望洋', '塔石', '雀仔園', '水塘']],
+    ['筷子基 / 青洲',     ['筷子基', '青洲', '林茂塘']],
+    ['北區 / 黑沙環',     ['祐漢', '望廈', '黑沙環', '台山']]
+  ];
+
   function zoneOf(park) {
-    var name = (park.name || '') + (park.address || '');
-    if (name.indexOf('港珠澳大橋') !== -1) return '港珠澳大橋';
+    var text = (park.name || '') + (park.address || '');
+    for (var i = 0; i < ZONE_KEYWORDS.length; i++) {
+      var kws = ZONE_KEYWORDS[i][1];
+      for (var j = 0; j < kws.length; j++) {
+        if (text.indexOf(kws[j]) !== -1) return ZONE_KEYWORDS[i][0];
+      }
+    }
+    /* 冇撞到已知地名（地址空白，或者一個未收錄嘅新街名）：退返用粗略嘅
+       緯度帶，好過乜都唔分。 */
     var lat = park.lat;
     if (!lat) return '未分區';
     if (lat >= 22.175) return '澳門半島';
     if (lat >= 22.148) return '氹仔';
-    if (lat >= 22.128) return '路氹城';
+    if (lat >= 22.128) return '路氹城 / 澳大';
     return '路環';
   }
 
-  var ZONE_ORDER = ['澳門半島', '氹仔', '路氹城', '路環', '港珠澳大橋', '未分區'];
+  var ZONE_ORDER = [
+    '北區 / 黑沙環', '筷子基 / 青洲', '荷蘭園 / 東望洋', '新口岸 / 皇朝',
+    '下環 / 內港 / 新馬路', '澳門半島', '氹仔', '路氹城 / 澳大', '路環', '港珠澳大橋', '未分區'
+  ];
 
   /* The filter offers only the zones the fetched data actually contains. */
   function zonesPresent(parks) {
