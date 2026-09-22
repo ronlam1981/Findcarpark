@@ -198,14 +198,67 @@
   ];
 
   /* The filter offers only the zones the fetched data actually contains. */
-  function zonesPresent(parks) {
+  function regionsPresent(values, order) {
     var seen = {};
-    for (var i = 0; i < parks.length; i++) seen[parks[i].region] = true;
+    for (var i = 0; i < values.length; i++) seen[values[i]] = true;
     var out = ['全部'];
-    for (var j = 0; j < ZONE_ORDER.length; j++) {
-      if (seen[ZONE_ORDER[j]]) out.push(ZONE_ORDER[j]);
+    for (var j = 0; j < order.length; j++) {
+      if (seen[order[j]]) out.push(order[j]);
     }
     return out;
+  }
+
+  function zonesPresent(parks) {
+    return regionsPresent(parks.map(function(p) { return p.region; }), ZONE_ORDER);
+  }
+
+  /* 「堂區」係澳門法定嘅行政分區，一共 7 個，比上面嗰 25 個統計分區更粗、
+     更多人識（用戶想兩套分區標準都揀得到）。呢個表由上面已經配好嘅統計
+     分區「摺埋」做堂區，唔使由地址重新判斷多次。
+
+     氹仔、路氹、路環三邊各自成個都係得返一個堂區，冇歧義，可以放心
+     摺埋。澳門半島嗰 5 個堂區（花地瑪／聖安多尼／大堂／望德／風順堂）
+     互相貼近，尤其係舊城中心果幾個細堂區——大三巴牌坊一帶其實屬聖
+     安多尼堂區，唔係望文生義咁話係「大堂」——呢層對應未經官方地圖
+     逐條街核實，如果見到邊個分區分錯咗堂區，一樣可以話低嚟改。港珠澳
+     大橋人工島同澳門大學新校區（實質喺橫琴）唔屬傳統七堂區任何一個，
+     所以擺埋「未分堂區」，好過屈佢入錯一個堂區。 */
+  var PARISH_OF = {
+    '青洲區': '花地瑪堂區', '筷子基及林茂塘區': '花地瑪堂區', '台山區': '花地瑪堂區',
+    '祐漢區': '花地瑪堂區', '黑沙環新填海區': '花地瑪堂區', '黑沙環區': '花地瑪堂區',
+    '望廈及水塘區': '花地瑪堂區', '新城A區': '花地瑪堂區',
+
+    '高士德及雅廉訪區': '聖安多尼堂區', '新橋區': '聖安多尼堂區', '沙梨頭及大三巴區': '聖安多尼堂區',
+
+    '荷蘭園區': '望德堂區', '東望洋區': '望德堂區',
+
+    '中區': '大堂區', '南灣及主教山區': '大堂區', '新口岸區': '大堂區',
+    '外港及南灣湖新填海區': '大堂區',
+
+    '下環區': '風順堂區',
+
+    '氹仔舊城及馬場區': '嘉模堂區', '氹仔中心區': '嘉模堂區',
+    '海洋及小潭山區': '嘉模堂區', '北安及大潭山區': '嘉模堂區',
+    '氹仔（分區未確定）': '嘉模堂區',
+
+    '路氹區': '聖方濟各堂區', '路環區': '聖方濟各堂區',
+    '路氹（分區未確定）': '聖方濟各堂區', '路環（分區未確定）': '聖方濟各堂區',
+
+    '澳門大學新校區': '未分堂區', '港珠澳大橋人工島': '未分堂區',
+    '澳門半島（分區未確定）': '未分堂區', '未分區': '未分堂區'
+  };
+
+  var PARISH_ORDER = [
+    '花地瑪堂區', '聖安多尼堂區', '望德堂區', '大堂區', '風順堂區',
+    '嘉模堂區', '聖方濟各堂區', '未分堂區'
+  ];
+
+  function parishOf(zone) {
+    return PARISH_OF[zone] || '未分堂區';
+  }
+
+  function parishesPresent(parks) {
+    return regionsPresent(parks.map(function(p) { return parishOf(p.region); }), PARISH_ORDER);
   }
 
   /* ─── Utility ─── */
@@ -1247,8 +1300,22 @@
     var [locationLabel, setLocationLabel]     = useState('');
     var [radius, setRadius]                   = useState(1000);
     var [vehicleType, setVehicleType]         = useState('light');
+    /* 用戶想兩套官方分區標準都揀得到：'district' 用返 25 個統計分區
+       （細，貼近實際街道），'parish' 用 7 個法定堂區（粗，最多人識）。
+       切換標準嗰陣，之前揀落嘅分區未必仲存在（例如「青洲區」喺堂區
+       模式下唔存在），所以要清返做「全部」。 */
+    var [regionMode, setRegionMode]           = useState('parish');
     var [selectedRegion, setSelectedRegion]   = useState('全部');
-    var regions = useMemo(function() { return zonesPresent(parksBase); }, [parksBase]);
+    var regionOf = useCallback(function(park) {
+      return regionMode === 'parish' ? parishOf(park.region) : park.region;
+    }, [regionMode]);
+    var regions = useMemo(function() {
+      return regionMode === 'parish' ? parishesPresent(parksBase) : zonesPresent(parksBase);
+    }, [parksBase, regionMode]);
+    var switchRegionMode = useCallback(function(mode) {
+      setRegionMode(mode);
+      setSelectedRegion('全部');
+    }, []);
     var [sortBy, setSortBy]                   = useState('spaces');
     var [activeNavId, setActiveNavId]         = useState(null);
     var [favParks, setFavParks]               = useState(loadFavParks);
@@ -2099,7 +2166,7 @@
       }
 
       if (selectedRegion !== '全部') {
-        list = list.filter(function(p) { return p.region === selectedRegion; });
+        list = list.filter(function(p) { return regionOf(p) === selectedRegion; });
       }
       if (userLocation && radius !== Infinity) {
         list = list.filter(function(p) { return p.distance !== null && p.distance <= radius; });
@@ -2108,7 +2175,7 @@
       list.sort(parkComparator(sortBy, vehicleType));
 
       return list;
-    }, [mergedParks, userLocation, radius, selectedRegion, vehicleType, sortBy, focusParkId]);
+    }, [mergedParks, userLocation, radius, selectedRegion, regionOf, vehicleType, sortBy, focusParkId]);
 
     /* Favourites reuse the decorated rows, so distance and fee read the
        same as anywhere else; ones no longer in the feed simply drop out. */
@@ -2287,7 +2354,7 @@
     /* region stats */
     var regionStats = useMemo(function() {
       var pool = selectedRegion === '全部' ? mergedParks
-        : mergedParks.filter(function(p) { return p.region === selectedRegion; });
+        : mergedParks.filter(function(p) { return regionOf(p) === selectedRegion; });
       var st = { light:{a:0,t:0,known:false,tKnown:false}, moto:{a:0,t:0,known:false,tKnown:false},
                  ev:{a:0,t:0,known:false,tKnown:false},    heavy:{a:0,t:0,known:false,tKnown:false} };
       pool.forEach(function(p) {
@@ -2302,7 +2369,7 @@
         });
       });
       return { count: pool.length, st: st };
-    }, [mergedParks, selectedRegion]);
+    }, [mergedParks, selectedRegion, regionOf]);
 
     /* Google 同 Apple Maps 嗰兩條網址係真正嘅「Universal Link」——手機
        系統喺瀏覽器發出任何網絡請求之前就攔截咗，即時開返 App，完全唔使等。
@@ -2871,7 +2938,23 @@
                 </div>
               )}
 
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">區域查詢</label>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">區域查詢</label>
+                {/* 兩套官方分區標準都提供：7 個法定堂區（粗）／25 個統計
+                    分區（細，跟返政府《總體規劃》十八分區文件）。 */}
+                <div className="flex bg-gray-100 rounded-full p-0.5 text-[10px]">
+                  <button onClick={function(){ switchRegionMode('parish'); }}
+                    className={'px-2 py-0.5 rounded-full transition-colors ' +
+                      (regionMode === 'parish' ? 'bg-white text-emerald-700 font-bold shadow-sm' : 'text-gray-500')}>
+                    堂區
+                  </button>
+                  <button onClick={function(){ switchRegionMode('district'); }}
+                    className={'px-2 py-0.5 rounded-full transition-colors ' +
+                      (regionMode === 'district' ? 'bg-white text-emerald-700 font-bold shadow-sm' : 'text-gray-500')}>
+                    分區
+                  </button>
+                </div>
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {regions.map(function(reg) {
                   return (
