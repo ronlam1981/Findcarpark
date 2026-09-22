@@ -290,11 +290,26 @@
   }
 
   function getJson(r) {
-    if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
+    if (!r.ok) {
+      return r.text().then(function(t) {
+        return Promise.reject(new Error('HTTP_' + r.status + ' · ' + describePayload(t)));
+      }, function() {
+        return Promise.reject(new Error('HTTP_' + r.status));
+      });
+    }
     return r.json();
   }
+  /* A failing response still carries the reason in its body — the relay's
+     own error text, or the upstream's. Throwing away everything but the
+     status code turned a specific explanation into a bare "HTTP_403". */
   function getRawText(r) {
-    if (!r.ok) return Promise.reject(new Error('HTTP_' + r.status));
+    if (!r.ok) {
+      return r.text().then(function(t) {
+        return Promise.reject(new Error('HTTP_' + r.status + ' · ' + describePayload(t)));
+      }, function() {
+        return Promise.reject(new Error('HTTP_' + r.status));
+      });
+    }
     return r.text();
   }
 

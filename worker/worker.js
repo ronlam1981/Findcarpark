@@ -135,10 +135,17 @@ function corsHeaders(origin) {
   };
 }
 
-/** 錯誤一律回 XML 格式嘅註解，前端嘅診斷面板可以原文照抄顯示出嚟。 */
+/**
+ * 錯誤一律回純文字。
+ *
+ * 之前呢度回嘅係一個 XML 註解 `<!-- ... -->`。問題係：一份淨得註解、
+ * 冇根元素嘅文件唔係合法 XML，所以你喺瀏覽器打開條網址想驗證嗰陣，
+ * 瀏覽器只會彈「Start tag expected」解析錯誤，反而完全睇唔到訊息本身 ——
+ * 而驗證正正係呢個訊息最有用嘅時候。純文字任何瀏覽器都照原文顯示。
+ */
 function fail(status, message, cors) {
-  return new Response('<!-- findcarpark-proxy error: ' + message + ' -->', {
+  return new Response('findcarpark-proxy 出錯：' + message + '\n', {
     status,
-    headers: Object.assign({ 'Content-Type': 'application/xml; charset=utf-8' }, cors),
+    headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, cors),
   });
 }
