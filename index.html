@@ -38,6 +38,11 @@
       box-shadow: 0 0 0 2px rgba(37,99,235,.4);
     }
     .leaflet-popup-content { margin: 10px 12px; font-size: 13px; }
+    .cp-me-label {
+      background: #2563eb; color: #fff; border: none; font-size: 11px;
+      font-weight: 700; padding: 2px 7px; border-radius: 10px; box-shadow: none;
+    }
+    .cp-me-label::before { border-top-color: #2563eb !important; }
     .leaflet-container { font-family: inherit; }
   </style>
 </head>
@@ -728,8 +733,9 @@
     var [sortBy, setSortBy]                   = useState('spaces');
     var [activeNavId, setActiveNavId]         = useState(null);
     var [viewMode, setViewMode]               = useState('list');
+    var [userAccuracy, setUserAccuracy]       = useState(null);
     var [mapError, setMapError]               = useState('');
-    var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null);
+    var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null), accRef = useRef(null);
     var mapElRef = useRef(null), fitKeyRef = useRef('');
     var [gpsError, setGpsError]               = useState(null);
     var [searchText, setSearchText]           = useState('');
@@ -872,9 +878,11 @@
       setSearchText(park.name);
       setSuggestions([]);
       setShowSugg(false);
+      /* A lookup already bypasses the region and radius filters, so there is
+         no need to clear them — and clearing them threw away the search
+         radius the user had just set with 搵車位, which did not come back
+         when they returned to the list. */
       setFocusParkId(park.id);
-      setSelectedRegion('全部');
-      setRadius(Infinity);
     }, []);
 
     /* The other half of a lookup: what else is near that carpark. Here the
@@ -968,10 +976,26 @@
       setSelectedRegion('全部');
       navigator.geolocation.getCurrentPosition(
         function(pos) {
-          setUserLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          var lat = pos.coords.latitude, lng = pos.coords.longitude;
+          setUserLocation({ lat: lat, lng: lng });
+          setUserAccuracy(pos.coords.accuracy || null);
           setLocationLabel('我的位置');
           setRadius(1000);
           setSortBy('distance');
+          /* "我的位置" says nothing about where that is, so ask OSM what the
+             place is called. Best-effort: the coordinates are already usable
+             on their own, and a failure just leaves the generic label. */
+          fetch('https://nominatim.openstreetmap.org/reverse?format=json&zoom=18' +
+                '&lat=' + lat + '&lon=' + lng,
+                { headers: { 'Accept-Language': 'zh' } })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+              var a = (d && d.address) || {};
+              var place = a.road || a.pedestrian || a.suburb || a.neighbourhood ||
+                          a.quarter || a.city_district || a.town || a.city;
+              if (place) setLocationLabel('我的位置：' + place);
+            })
+            .catch(function() {});
         },
         function() { setGpsError('無法獲取您的位置，請允許瀏覽器存取定位權限。'); },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
@@ -1176,7 +1200,8 @@
          last time is bound to a node that is no longer on the page. */
       if (mapRef.current && mapRef.current.getContainer() !== mapElRef.current) {
         mapRef.current.remove();
-        mapRef.current = null; layerRef.current = null; meRef.current = null;
+        mapRef.current = null; layerRef.current = null;
+        meRef.current = null; accRef.current = null;
         fitKeyRef.current = '';
       }
 
@@ -1266,12 +1291,28 @@
       });
 
       if (meRef.current) { map.removeLayer(meRef.current); meRef.current = null; }
+      if (accRef.current) { map.removeLayer(accRef.current); accRef.current = null; }
       if (userLocation) {
+        var label = locationLabel || '我的位置';
+        /* How far off the fix might be, drawn rather than left to guess. */
+        if (userAccuracy && userAccuracy > 20 && L.circle) {
+          accRef.current = L.circle([userLocation.lat, userLocation.lng], {
+            radius: userAccuracy, color: '#2563eb', weight: 1,
+            fillColor: '#2563eb', fillOpacity: 0.08
+          }).addTo(map);
+        }
         meRef.current = L.marker([userLocation.lat, userLocation.lng], {
           icon: L.divIcon({ className: 'cp-pin-wrap', html: '<div class="cp-me"></div>',
                             iconSize: [16, 16], iconAnchor: [8, 8] }),
-          title: locationLabel || '我的位置'
+          title: label, zIndexOffset: 1000
         }).addTo(map);
+        /* A permanent tooltip puts the place name on the map itself, so the
+           blue dot does not need to be tapped to know what it is. */
+        if (meRef.current.bindTooltip) {
+          meRef.current.bindTooltip(label, {
+            permanent: true, direction: 'top', offset: [0, -10], className: 'cp-me-label'
+          });
+        }
       }
 
       /* Refit only when the set of carparks or the origin actually changes,
@@ -1285,7 +1326,7 @@
         if (pts.length === 1) map.setView(pts[0], 16);
         else if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
       }
-    }, [viewMode, mappableParks, vehicleType, userLocation, locationLabel]);
+    }, [viewMode, mappableParks, vehicleType, userLocation, locationLabel, userAccuracy]);
 
     /* region stats */
     var regionStats = useMemo(function() {
@@ -1491,7 +1532,12 @@
           )}
 
           {/* ── Control Panel ── */}
-          <div className="px-4 pt-4 pb-3 border-b border-gray-100 bg-white">
+          {/* Leaflet's own panes run from z-index 400 (tiles) to 1000
+              (controls), while the search suggestions were z-50. With no
+              stacking context between them the map painted over the
+              dropdown, so on the map view typing appeared to do nothing.
+              Giving the panel and the map their own layers settles it. */}
+          <div className="relative z-30 px-4 pt-4 pb-3 border-b border-gray-100 bg-white">
 
             {/* Search box */}
             <div className="relative mb-4">
@@ -1735,7 +1781,7 @@
 
           {/* ── Map ── */}
           {focusParkId === null && viewMode === 'map' && parksBase.length > 0 && (
-          <div className="flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
+          <div className="relative z-0 flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
             {mapError ? (
               <div className="p-6 text-center text-sm text-gray-500">
                 <i className="fa-solid fa-triangle-exclamation text-2xl mb-2 block text-gray-300"></i>
