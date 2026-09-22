@@ -60,6 +60,7 @@
   const LS_PROXY_KEY = 'mcp_custom_proxy';
   const LS_HISTORY_KEY = 'mcp_history_v1';
   const LS_HISTORY_OFF = 'mcp_history_off';
+  const LS_STATS_OPEN = 'mcp_stats_open';
   const HALF_YEAR_MS = 180 * 24 * 60 * 60 * 1000;
   const REALTIME_INTERVAL = 30000;
   const FETCH_TIMEOUT = 8000;
@@ -969,6 +970,9 @@
     var [searchLoading, setSearchLoading]     = useState(false);
     var [showSettings, setShowSettings]       = useState(false);
     var [showDiag, setShowDiag]               = useState(false);
+    var [statsOpen, setStatsOpen]             = useState(function() {
+      try { return localStorage.getItem(LS_STATS_OPEN) === '1'; } catch (e) { return false; }
+    });
     var [diagCopied, setDiagCopied]           = useState(false);
     var [proxyInput, setProxyInput]           = useState(customProxyBase());
     var [proxySaved, setProxySaved]           = useState(false);
@@ -1174,6 +1178,19 @@
     }, [searchText, parksBase, handleSuggClick]);
 
     var historyCount = useMemo(function() { return countSamples(history); }, [history]);
+
+    /* Remembering the choice is a per-device convenience, so localStorage is
+       the right place for it and a failure to read or write is harmless. */
+    var toggleStats = useCallback(function() {
+      setStatsOpen(function(prev) {
+        var next = !prev;
+        try {
+          if (next) localStorage.setItem(LS_STATS_OPEN, '1');
+          else localStorage.removeItem(LS_STATS_OPEN);
+        } catch (e) {}
+        return next;
+      });
+    }, []);
 
     var toggleRecording = useCallback(function() {
       var next = !recording;
@@ -2248,11 +2265,22 @@
           {/* ── Region Stats Bar ── */}
           {focusParkId === null && parksBase.length > 0 && (
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-emerald-100">
-            <div className="flex justify-between items-center mb-1.5">
-              <span className="text-xs font-bold text-emerald-800">{selectedRegion} ({regionStats.count}個停車場)</span>
-              <span className="text-[10px] text-emerald-600">空置 / 總數</span>
-            </div>
-            <div className="grid grid-cols-4 gap-1.5">
+            {/* Collapsed by default: the totals are context, and on a phone
+                they pushed the carpark list itself below the fold. */}
+            <button onClick={toggleStats}
+              className="w-full flex justify-between items-center text-left"
+              aria-expanded={statsOpen}>
+              <span className="text-xs font-bold text-emerald-800">
+                <i className={'fa-solid fa-chevron-' + (statsOpen ? 'down' : 'right') +
+                   ' mr-2 text-[9px] text-emerald-600'}></i>
+                {selectedRegion} ({regionStats.count}個停車場)
+              </span>
+              <span className="text-[10px] text-emerald-600">
+                {statsOpen ? '空置 / 總數' : '總覽'}
+              </span>
+            </button>
+            {statsOpen && (
+            <div className="grid grid-cols-4 gap-1.5 mt-1.5">
               {[
                 {key:'light', icon:'fa-car',        color:'text-blue-500',   label:'輕型', sel:'light'},
                 {key:'ev',    icon:'fa-bolt',        color:'text-green-500',  label:'電動', sel:'ev'},
@@ -2277,6 +2305,7 @@
                 );
               })}
             </div>
+            )}
           </div>
           )}
 
