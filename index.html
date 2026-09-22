@@ -60,6 +60,7 @@
   const LS_PROXY_KEY = 'mcp_custom_proxy';
   const LS_HISTORY_KEY = 'mcp_history_v1';
   const LS_HISTORY_OFF = 'mcp_history_off';
+  const LS_COLLECT_PLAN = 'mcp_collect_plan';
   const LS_STATS_OPEN = 'mcp_stats_open';
   const LS_FAV_PARKS = 'mcp_fav_parks';
   const LS_FAV_TYPES = 'mcp_fav_types';
@@ -855,6 +856,81 @@
     return hist;
   }
 
+  /* ─── Scheduled collection ───────────────────────────────────────────
+     A run with a fixed length that samples every half hour and stops by
+     itself. What it cannot do is run in the background: a browser executes
+     nothing once its tab is closed, so a seven-day run only collects during
+     the hours the app is actually open. That is why progress is reported as
+     coverage — taken against expected — instead of just a sample count: the
+     gaps are the honest part of the picture. */
+
+  var COLLECT_EVERY_MS = 30 * 60 * 1000;
+  var COLLECT_OPTIONS = [
+    { days: 1, label: '1 日' },
+    { days: 3, label: '3 日' },
+    { days: 7, label: '1 星期' }
+  ];
+
+  function loadPlan() {
+    try {
+      var raw = localStorage.getItem(LS_COLLECT_PLAN);
+      if (!raw) return null;
+      var o = JSON.parse(raw);
+      if (!o || !o.startedAt || !o.endsAt) return null;
+      return o;
+    } catch (e) { return null; }
+  }
+  function savePlan(plan) {
+    try {
+      if (plan) localStorage.setItem(LS_COLLECT_PLAN, JSON.stringify(plan));
+      else localStorage.removeItem(LS_COLLECT_PLAN);
+    } catch (e) {}
+  }
+  function makePlan(days, now) {
+    var start = (now || new Date()).getTime();
+    return {
+      days: days,
+      startedAt: new Date(start).toISOString(),
+      endsAt: new Date(start + days * 24 * 60 * 60 * 1000).toISOString(),
+      taken: 0
+    };
+  }
+  function planActive(plan, now) {
+    if (!plan) return false;
+    return (now || Date.now()) < new Date(plan.endsAt).getTime();
+  }
+
+  /* Elapsed time, how many half-hour samples that many hours should have
+     produced, and how many actually landed. */
+  function planProgress(plan, now) {
+    if (!plan) return null;
+    var t = (now || Date.now());
+    var start = new Date(plan.startedAt).getTime();
+    var end = new Date(plan.endsAt).getTime();
+    var elapsed = Math.max(0, Math.min(t, end) - start);
+    var total = end - start;
+    var expected = Math.max(1, Math.floor(elapsed / COLLECT_EVERY_MS));
+    var taken = plan.taken || 0;
+    return {
+      done: t >= end,
+      elapsedMs: elapsed,
+      totalMs: total,
+      timePct: total ? Math.min(100, Math.round((elapsed / total) * 100)) : 0,
+      expected: expected,
+      taken: taken,
+      coveragePct: Math.min(100, Math.round((taken / expected) * 100)),
+      remainMs: Math.max(0, end - t)
+    };
+  }
+
+  function fmtDuration(ms) {
+    var mins = Math.floor(ms / 60000);
+    var d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+    if (d) return d + ' 日 ' + h + ' 小時';
+    if (h) return h + ' 小時 ' + m + ' 分';
+    return m + ' 分';
+  }
+
   function countSamples(hist) {
     var n = 0;
     for (var id in hist) {
@@ -1037,8 +1113,13 @@
     var [history, setHistory]                 = useState(loadHistory);
     var [recording, setRecording]             = useState(historyEnabled);
     var [historyWarn, setHistoryWarn]         = useState('');
+    var [plan, setPlan]                       = useState(loadPlan);
+    var [planMsg, setPlanMsg]                 = useState('');
+    var [nowTick, setNowTick]                 = useState(Date.now());
+    var wakeLockRef = useRef(null);
     var [busyPick, setBusyPick]               = useState(null);
     var lastRecordRef = useRef(0);
+    var planRef = useRef(null);
     var [mapError, setMapError]               = useState('');
     var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null), accRef = useRef(null);
     var mapElRef = useRef(null), fitKeyRef = useRef('');
@@ -1066,6 +1147,8 @@
     var lastRtTsRef = useRef(null);
     lastRtTsRef.current = lastRtTs;
 
+    planRef.current = plan;
+
     /* fetch realtime spaces */
     var fetchRealtime = useCallback(function(isBackground) {
       if (!isBackground) setRtLoading(true);
@@ -1091,12 +1174,15 @@
           setLastRtTs(new Date());
           setConnStatus('ok');
 
-          /* Fold this round into the local busy-hour history, at most once
-             every few minutes so a session left open does not drown the
-             average in readings from one afternoon. */
-          if (historyEnabled()) {
-            var now = Date.now();
-            if (now - lastRecordRef.current >= RECORD_EVERY_MS) {
+          /* Fold this round into the local busy-hour history. A scheduled
+             run sets the cadence to half-hourly and counts what it managed
+             to take; otherwise the passive setting records more often so a
+             session left open does not drown the average in one afternoon. */
+          var now = Date.now();
+          var onPlan = planActive(planRef.current, now);
+          if (historyEnabled() || onPlan) {
+            var every = onPlan ? COLLECT_EVERY_MS : RECORD_EVERY_MS;
+            if (now - lastRecordRef.current >= every) {
               lastRecordRef.current = now;
               setHistory(function(prev) {
                 var next = addSamples(Object.assign({}, prev), arr, new Date());
@@ -1105,6 +1191,14 @@
                 else if (r === 'too_big') setHistoryWarn('繁忙時間紀錄已達上限，請喺設定清除舊紀錄。');
                 return next;
               });
+              if (onPlan) {
+                setPlan(function(prev) {
+                  if (!prev) return prev;
+                  var next = Object.assign({}, prev, { taken: (prev.taken || 0) + 1 });
+                  savePlan(next);
+                  return next;
+                });
+              }
             }
           }
           console.log('[Realtime OK] parsed', arr.length, 'parks. Sample:', arr[0]);
@@ -1297,6 +1391,76 @@
         return next;
       });
     }, []);
+
+    /* Keeping the screen awake is the difference between a multi-day run
+       collecting and a phone locking after a minute. Best-effort: not every
+       browser offers it, and losing it is not an error. */
+    var releaseWake = useCallback(function() {
+      var w = wakeLockRef.current;
+      wakeLockRef.current = null;
+      if (w && w.release) { try { w.release(); } catch (e) {} }
+    }, []);
+
+    var requestWake = useCallback(function() {
+      if (!navigator.wakeLock || !navigator.wakeLock.request) return;
+      if (wakeLockRef.current) return;
+      try {
+        navigator.wakeLock.request('screen').then(function(w) {
+          wakeLockRef.current = w;
+          if (w.addEventListener) {
+            w.addEventListener('release', function(){ wakeLockRef.current = null; });
+          }
+        }, function(){});
+      } catch (e) {}
+    }, []);
+
+    var startCollect = useCallback(function(days) {
+      var p = makePlan(days, new Date());
+      savePlan(p);
+      setPlan(p);
+      setHistoryWarn('');
+      setPlanMsg('');
+      lastRecordRef.current = 0;   /* take the first sample straight away */
+      requestWake();
+      fetchRealtime(false);
+    }, [requestWake, fetchRealtime]);
+
+    var stopCollect = useCallback(function() {
+      if (!window.confirm('停止收集？已經收集到嘅數據會保留，只係唔再繼續。')) return;
+      savePlan(null);
+      setPlan(null);
+      releaseWake();
+      setPlanMsg('已停止收集。已收集嘅數據仍然保留。');
+    }, [releaseWake]);
+
+    /* Ends itself once the window is up, and keeps the countdown moving. */
+    useEffect(function() {
+      if (!plan) { releaseWake(); return; }
+      function check() {
+        setNowTick(Date.now());
+        if (!planActive(plan, Date.now())) {
+          savePlan(null);
+          setPlan(null);
+          releaseWake();
+          setPlanMsg('收集完成！數據已經併入繁忙時間分析，' +
+                     '可以喺任何停車場嘅卡片下面睇到圖表。');
+        }
+      }
+      check();
+      var timer = setInterval(check, 30000);
+      return function() { clearInterval(timer); };
+    }, [plan, releaseWake]);
+
+    /* A screen lock drops the wake lock; take it again when we come back. */
+    useEffect(function() {
+      if (!plan) return;
+      function onVisible() {
+        if (document.visibilityState === 'visible') requestWake();
+      }
+      document.addEventListener('visibilitychange', onVisible);
+      requestWake();
+      return function() { document.removeEventListener('visibilitychange', onVisible); };
+    }, [plan, requestWake]);
 
     var toggleRecording = useCallback(function() {
       var next = !recording;
@@ -2098,6 +2262,95 @@
                 )}
               </div>
 
+              {/* Scheduled collection */}
+              <div className="bg-slate-700 rounded-lg p-3 mb-3">
+                <div className="text-xs font-semibold text-slate-300 mb-1">
+                  <i className="fa-solid fa-stopwatch mr-1.5"></i>定時收集繁忙時間數據
+                </div>
+
+                {!plan ? (
+                  <div>
+                    <div className="text-[10px] text-slate-400 mb-2 leading-relaxed">
+                      每半小時記低一次全部停車場嘅車位數，夠鐘自動停。收集到嘅數據會
+                      併入每個停車場嘅「繁忙時間」圖表。
+                    </div>
+                    <div className="text-[10px] text-amber-300/90 mb-2 leading-relaxed">
+                      <i className="fa-solid fa-circle-info mr-1"></i>
+                      瀏覽器關咗就唔會收集。想收足幾日，要一直開住呢版
+                      （建議用部舊機插住電）。下面會顯示實際收集咗幾多成。
+                    </div>
+                    <div className="text-[10px] text-slate-400 mb-1">揀收集時長：</div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {COLLECT_OPTIONS.map(function(o) {
+                        return (
+                          <button key={o.days} onClick={function(){ startCollect(o.days); }}
+                            className="py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors">
+                            {o.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    {(function() {
+                      var pr = planProgress(plan, nowTick);
+                      return (
+                        <div>
+                          <div className="flex items-center justify-between text-[11px] text-slate-200 mb-1">
+                            <span>
+                              <i className="fa-solid fa-circle text-emerald-400 text-[7px] mr-1.5 pulse-red"></i>
+                              收集中（{plan.days} 日）
+                            </span>
+                            <span className="text-slate-400">仲有 {fmtDuration(pr.remainMs)}</span>
+                          </div>
+
+                          <div className="h-1.5 bg-slate-600 rounded-full overflow-hidden mb-2">
+                            <div className="h-full bg-emerald-500" style={{width: pr.timePct + '%'}}></div>
+                          </div>
+
+                          {/* Coverage, not just a count: this is what says
+                              whether the run actually captured the window. */}
+                          <div className="rounded-lg bg-slate-800 p-2 mb-2">
+                            <div className="flex justify-between text-[10px] text-slate-300">
+                              <span>實際收集</span>
+                              <span className="font-bold text-slate-100">
+                                {pr.taken} / {pr.expected} 次
+                              </span>
+                            </div>
+                            <div className="h-1.5 bg-slate-600 rounded-full overflow-hidden my-1">
+                              <div className={'h-full ' + (pr.coveragePct >= 80 ? 'bg-emerald-500'
+                                : pr.coveragePct >= 40 ? 'bg-amber-400' : 'bg-red-500')}
+                                style={{width: pr.coveragePct + '%'}}></div>
+                            </div>
+                            <div className="text-[10px] text-slate-400">
+                              覆蓋率 {pr.coveragePct}%
+                              {pr.coveragePct < 80 && ' — 中間有段時間冇開住程式，圖表會有空格'}
+                            </div>
+                          </div>
+
+                          <div className="text-[10px] text-slate-400 mb-2">
+                            開始：{fmtTs(plan.startedAt)}<br/>
+                            已經過：{fmtDuration(pr.elapsedMs)}
+                          </div>
+
+                          <button onClick={stopCollect}
+                            className="w-full py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-xs font-medium transition-colors">
+                            <i className="fa-solid fa-stop mr-1"></i>提早停止
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
+                {planMsg && (
+                  <div className="mt-2 text-[11px] px-2 py-1.5 rounded bg-emerald-800 text-emerald-100">
+                    {planMsg}
+                  </div>
+                )}
+              </div>
+
               <div className="bg-slate-700 rounded-lg p-3 mb-3">
                 <div className="flex items-center justify-between mb-1">
                   <div className="text-xs font-semibold text-slate-300">繁忙時間紀錄</div>
@@ -2110,6 +2363,7 @@
                 <div className="text-[10px] text-slate-400 mb-2 leading-relaxed">
                   開住程式期間每 5 分鐘記低一次各停車場車位數，儲存喺你自己部手機，
                   用嚟計出每日／每周繁忙時間。唔會上傳，唔會同其他人共享。
+                  {plan && ' 而家有定時收集進行中，暫時改為每半小時一次。'}
                 </div>
                 <div className="text-[10px] text-slate-400 mb-2">
                   已記錄：<span className="font-bold text-slate-200">{historyCount}</span> 次讀數
