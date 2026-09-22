@@ -99,15 +99,18 @@ export default {
       return fail(502, '連唔到 ' + upstream.hostname + '：' + (e && e.message), cors);
     }
 
-    const body = await res.text();
-
     if (!res.ok) {
+      const body = await res.text();
       return fail(res.status,
         upstream.hostname + ' 回應 HTTP ' + res.status + '：' + body.slice(0, 300),
         cors);
     }
 
-    return new Response(body, {
+    // Stream the body straight through rather than reading it into a string:
+    // the free plan allows 10 ms of CPU per request, and decoding ~50 KB of
+    // XML on every call spends that budget for no reason. Only the error
+    // path needs the text, and that one is rare.
+    return new Response(res.body, {
       status: 200,
       headers: Object.assign({
         'Content-Type': res.headers.get('Content-Type') || 'application/xml; charset=utf-8',
