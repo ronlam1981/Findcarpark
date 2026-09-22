@@ -61,6 +61,8 @@
   const LS_HISTORY_KEY = 'mcp_history_v1';
   const LS_HISTORY_OFF = 'mcp_history_off';
   const LS_STATS_OPEN = 'mcp_stats_open';
+  const LS_FAV_PARKS = 'mcp_fav_parks';
+  const LS_FAV_TYPES = 'mcp_fav_types';
   const HALF_YEAR_MS = 180 * 24 * 60 * 60 * 1000;
   const REALTIME_INTERVAL = 30000;
   const FETCH_TIMEOUT = 8000;
@@ -713,6 +715,78 @@
     return '#059669';
   }
 
+  /* ─── Favourites ─────────────────────────────────────────────────────
+     Two lists the user curates, both per-device: the carparks they actually
+     use, and the vehicle types they actually drive. Everything here fails
+     soft — a browser that refuses localStorage loses the preference, not the
+     app. */
+
+  /* Every type DSAT's feed has a column for, plus the combined view. EV and
+     heavy are listed even though the feed does not currently publish counts
+     for them: the app shows "---" for those rather than pretending, and if
+     DSAT starts publishing they work with no change here. */
+  var VEHICLE_TYPES = [
+    { id: 'light', label: '輕型車',  icon: 'fa-car' },
+    { id: 'moto',  label: '電單車',  icon: 'fa-motorcycle' },
+    { id: 'ev',    label: '電動車',  icon: 'fa-bolt' },
+    { id: 'heavy', label: '重型車',  icon: 'fa-truck' },
+    { id: 'all',   label: '全部車型', icon: 'fa-layer-group' }
+  ];
+  /* The two the feed actually reports, so the default row is useful. */
+  var DEFAULT_FAV_TYPES = ['light', 'moto'];
+
+  function loadList(key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      if (!raw) return fallback.slice();
+      var a = JSON.parse(raw);
+      return Array.isArray(a) ? a : fallback.slice();
+    } catch (e) { return fallback.slice(); }
+  }
+  function saveList(key, list) {
+    try { localStorage.setItem(key, JSON.stringify(list)); } catch (e) {}
+  }
+
+  function loadFavParks() { return loadList(LS_FAV_PARKS, []); }
+  function loadFavTypes() {
+    var a = loadList(LS_FAV_TYPES, DEFAULT_FAV_TYPES).filter(function(id) {
+      return VEHICLE_TYPES.some(function(v) { return v.id === id; });
+    });
+    return a.length ? a : DEFAULT_FAV_TYPES.slice();
+  }
+
+  function toggleIn(list, id) {
+    var i = list.indexOf(id);
+    var next = list.slice();
+    if (i === -1) next.push(id); else next.splice(i, 1);
+    return next;
+  }
+
+  /* The row shows the starred types, and always the one currently selected —
+     otherwise choosing a type from 更多 would make it vanish from the row. */
+  function visibleTypes(favTypes, selected) {
+    var ids = favTypes.slice();
+    if (ids.indexOf(selected) === -1) ids.push(selected);
+    return VEHICLE_TYPES.filter(function(v) { return ids.indexOf(v.id) !== -1; });
+  }
+  function hiddenTypes(favTypes, selected) {
+    var shown = visibleTypes(favTypes, selected).map(function(v) { return v.id; });
+    return VEHICLE_TYPES.filter(function(v) { return shown.indexOf(v.id) === -1; });
+  }
+
+  /* Favourites in the order the user added them, skipping any carpark that
+     is no longer in the feed. */
+  function favouriteParks(parks, favIds) {
+    var byId = {};
+    parks.forEach(function(p) { byId[String(p.id)] = p; });
+    var out = [];
+    favIds.forEach(function(id) {
+      var p = byId[String(id)];
+      if (p) out.push(p);
+    });
+    return out;
+  }
+
   /* ─── Busy-hour history ──────────────────────────────────────────────
      There is no server, so nothing can log occupancy around the clock. What
      this does is record what the app already fetches, while it is open, on
@@ -951,7 +1025,14 @@
     var regions = useMemo(function() { return zonesPresent(parksBase); }, [parksBase]);
     var [sortBy, setSortBy]                   = useState('spaces');
     var [activeNavId, setActiveNavId]         = useState(null);
-    var [viewMode, setViewMode]               = useState('list');
+    var [favParks, setFavParks]               = useState(loadFavParks);
+    var [favTypes, setFavTypes]               = useState(loadFavTypes);
+    var [typePickerOpen, setTypePickerOpen]   = useState(false);
+    /* Opens on the favourites when there are any — that is what they are
+       for. Searching or locating moves off it. */
+    var [viewMode, setViewMode]               = useState(function() {
+      return loadFavParks().length ? 'fav' : 'list';
+    });
     var [userAccuracy, setUserAccuracy]       = useState(null);
     var [history, setHistory]                 = useState(loadHistory);
     var [recording, setRecording]             = useState(historyEnabled);
@@ -1121,6 +1202,7 @@
        every distance afterwards was measured from there while still being
        presented as the distance from you. */
     var handleSuggClick = useCallback(function(park) {
+      if (viewMode === 'fav') setViewMode('list');
       setSearchText(park.name);
       setSuggestions([]);
       setShowSugg(false);
@@ -1129,7 +1211,7 @@
          radius the user had just set with 搵車位, which did not come back
          when they returned to the list. */
       setFocusParkId(park.id);
-    }, []);
+    }, [viewMode]);
 
     /* The other half of a lookup: what else is near that carpark. Here the
        origin really does move, and the header says so. */
@@ -1158,6 +1240,7 @@
         return;
       }
       setFocusParkId(null);
+      if (viewMode === 'fav') setViewMode('list');
       setSearchLoading(true);
       var nomUrl = 'https://nominatim.openstreetmap.org/search?q=' +
         encodeURIComponent(searchText + ' 澳門') +
@@ -1175,12 +1258,35 @@
         })
         .catch(function() {})
         .then(function() { setSearchLoading(false); });
-    }, [searchText, parksBase, handleSuggClick]);
+    }, [searchText, parksBase, handleSuggClick, viewMode]);
 
     var historyCount = useMemo(function() { return countSamples(history); }, [history]);
 
     /* Remembering the choice is a per-device convenience, so localStorage is
        the right place for it and a failure to read or write is harmless. */
+    var toggleFavPark = useCallback(function(id) {
+      setFavParks(function(prev) {
+        var next = toggleIn(prev, String(id));
+        saveList(LS_FAV_PARKS, next);
+        return next;
+      });
+    }, []);
+
+    var isFavPark = useCallback(function(id) {
+      return favParks.indexOf(String(id)) !== -1;
+    }, [favParks]);
+
+    var toggleFavType = useCallback(function(id) {
+      setFavTypes(function(prev) {
+        var next = toggleIn(prev, id);
+        /* Emptying the row would leave nothing to tap, so the last one
+           stays. */
+        if (!next.length) return prev;
+        saveList(LS_FAV_TYPES, next);
+        return next;
+      });
+    }, []);
+
     var toggleStats = useCallback(function() {
       setStatsOpen(function(prev) {
         var next = !prev;
@@ -1280,6 +1386,7 @@
       }
       setGpsError(null);
       setFocusParkId(null);
+      if (viewMode === 'fav') setViewMode('list');
       setSelectedRegion('全部');
       navigator.geolocation.getCurrentPosition(
         function(pos) {
@@ -1307,16 +1414,17 @@
         function() { setGpsError('無法獲取您的位置，請允許瀏覽器存取定位權限。'); },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
-    }, []);
+    }, [viewMode]);
 
     var handleMockLocation = useCallback(function() {
       setFocusParkId(null);
+      if (viewMode === 'fav') setViewMode('list');
       setSelectedRegion('全部');
       setUserLocation({ lat: 22.194500, lng: 113.538500 });
       setLocationLabel('模擬：新馬路');
       setRadius(1000);
       setSortBy('distance');
-    }, []);
+    }, [viewMode]);
 
     /* Busy-hour panel for one carpark: the 24-hour shape and the weekday ×
        hour grid, both built from this device's own readings. Every figure is
@@ -1511,13 +1619,23 @@
                   <i className="fa-solid fa-map-pin mr-1 text-emerald-500"></i>{park.region}
                 </div>
               </div>
-              {park.distance !== null && (
-                <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full shrink-0">
-                  {park.distance < 1000
-                    ? park.distance + 'm'
-                    : (park.distance / 1000).toFixed(1) + 'km'}
-                </div>
-              )}
+              <div className="flex items-center space-x-2 shrink-0">
+                {park.distance !== null && (
+                  <div className="bg-emerald-100 text-emerald-700 text-xs font-bold px-2.5 py-1 rounded-full">
+                    {park.distance < 1000
+                      ? park.distance + 'm'
+                      : (park.distance / 1000).toFixed(1) + 'km'}
+                  </div>
+                )}
+                <button onClick={function(){ toggleFavPark(park.id); }}
+                  title={isFavPark(park.id) ? '由最愛移除' : '加入最愛'}
+                  aria-label={isFavPark(park.id) ? '由最愛移除' : '加入最愛'}
+                  className="p-1 -m-1">
+                  <i className={(isFavPark(park.id)
+                    ? 'fa-solid text-amber-400' : 'fa-regular text-gray-300') +
+                    ' fa-star text-base hover:text-amber-400 transition-colors'}></i>
+                </button>
+              </div>
             </div>
 
             {/* Spaces */}
@@ -1639,6 +1757,24 @@
       return list;
     }, [mergedParks, userLocation, radius, selectedRegion, vehicleType, sortBy, focusParkId]);
 
+    /* Favourites reuse the decorated rows, so distance and fee read the
+       same as anywhere else; ones no longer in the feed simply drop out. */
+    var favList = useMemo(function() {
+      var fi = feeInfo();
+      var rows = mergedParks.map(function(p) {
+        var dist = userLocation
+          ? Math.round(calcDistance(userLocation.lat, userLocation.lng, p.lat, p.lng))
+          : null;
+        return Object.assign({}, p, { distance: dist, currentFee: fi.fee, feeLabel: fi.label });
+      });
+      return favouriteParks(rows, favParks);
+    }, [mergedParks, favParks, userLocation]);
+
+    /* Before the carpark list has arrived there is nothing to put on a map
+       or in the favourites, and the list view owns the loading and retry
+       screens — so everything falls back to it until there is data. */
+    var shownView = (parksBase.length === 0) ? 'list' : viewMode;
+
     var focusedPark = useMemo(function() {
       if (focusParkId === null) return null;
       return displayedParks.length ? displayedParks[0] : null;
@@ -1655,7 +1791,7 @@
        Leaflet is imperative, so the map lives in refs and this effect
        syncs it with whatever the filters currently show. */
     useEffect(function() {
-      if (viewMode !== 'map') return;
+      if (shownView !== 'map') return;
       var L = window.L;
       if (!L) {
         setMapError('地圖程式庫載入唔到，可能係網絡問題。可以切返清單檢視。');
@@ -1793,7 +1929,7 @@
         if (pts.length === 1) map.setView(pts[0], 16);
         else if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
       }
-    }, [viewMode, mappableParks, vehicleType, userLocation, locationLabel, userAccuracy]);
+    }, [shownView, mappableParks, vehicleType, userLocation, locationLabel, userAccuracy]);
 
     /* region stats */
     var regionStats = useMemo(function() {
@@ -2165,7 +2301,11 @@
               </div>
             )}
 
-            {/* Region filter */}
+            {/* The favourites list is the user's own ordering of their own
+                carparks, so a region filter and a sort would only mislead —
+                but the vehicle type still decides what the cards highlight,
+                so that one stays. */}
+            {viewMode !== 'fav' && (
             <div className="mb-3">
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">區域查詢</label>
               <div className="flex flex-wrap gap-1.5">
@@ -2182,16 +2322,24 @@
                 })}
               </div>
             </div>
+            )}
 
             {/* Vehicle type */}
             <div className="mb-3">
-              <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">車輛類型</label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id:'light', label:'輕型車',  icon:'fa-car' },
-                  { id:'ev',    label:'電動車',  icon:'fa-bolt' },
-                  { id:'moto',  label:'電單車',  icon:'fa-motorcycle' }
-                ].map(function(v) {
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide">車輛類型</label>
+                <button onClick={function(){ setTypePickerOpen(!typePickerOpen); }}
+                  className="text-[11px] text-emerald-700 hover:text-emerald-900">
+                  {typePickerOpen ? '完成' : '⋯ 更多'}
+                </button>
+              </div>
+
+              {/* The row carries the types this driver actually uses; the
+                  rest live behind 更多 so a five-button row does not crowd
+                  out the carparks on a phone. */}
+              <div className={'grid gap-2 ' +
+                (visibleTypes(favTypes, vehicleType).length >= 4 ? 'grid-cols-4' : 'grid-cols-3')}>
+                {visibleTypes(favTypes, vehicleType).map(function(v) {
                   return (
                     <button key={v.id} onClick={function(){ setVehicleType(v.id); }}
                       className={'py-2 text-sm rounded-xl border transition-colors flex flex-col items-center space-y-1 ' +
@@ -2204,27 +2352,38 @@
                   );
                 })}
               </div>
-            </div>
 
-            {/* Radius (only when location set) */}
-            {userLocation && (
-              <div className="mb-3">
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">搜尋範圍</label>
-                <div className="grid grid-cols-5 gap-1">
-                  {[{v:500,l:'500m'},{v:1000,l:'1km'},{v:2000,l:'2km'},{v:3000,l:'3km'},{v:Infinity,l:'全部'}].map(function(r) {
+              {typePickerOpen && (
+                <div className="mt-2 rounded-xl border border-gray-200 bg-gray-50 p-2">
+                  <p className="text-[10px] text-gray-500 mb-2">
+                    㩒★揀你常用嘅車型，佢哋會留喺上面一行；其餘收埋喺「更多」。
+                  </p>
+                  {VEHICLE_TYPES.map(function(v) {
+                    var starred = favTypes.indexOf(v.id) !== -1;
+                    var noFeed = (v.id === 'ev' || v.id === 'heavy');
                     return (
-                      <button key={r.v} onClick={function(){ setRadius(r.v); }}
-                        className={'py-1.5 text-[11px] rounded-lg transition-colors ' +
-                          (radius === r.v ? 'bg-gray-800 text-white font-medium' : 'bg-gray-100 text-gray-600 hover:bg-gray-200')}>
-                        {r.l}
-                      </button>
+                      <div key={v.id} className="flex items-center py-1">
+                        <button onClick={function(){ toggleFavType(v.id); }}
+                          title={starred ? '取消常用' : '設為常用'}
+                          className="w-7 shrink-0 text-center">
+                          <i className={(starred ? 'fa-solid text-amber-400' : 'fa-regular text-gray-300') + ' fa-star text-sm'}></i>
+                        </button>
+                        <button onClick={function(){ setVehicleType(v.id); }}
+                          className={'flex-1 text-left text-xs py-1 px-2 rounded-lg ' +
+                            (vehicleType === v.id ? 'bg-blue-100 text-blue-800 font-bold' : 'text-gray-700')}>
+                          <i className={'fa-solid ' + v.icon + ' mr-2 w-4 text-center'}></i>{v.label}
+                          {noFeed && (
+                            <span className="ml-2 text-[9px] text-gray-400">交通局未提供即時數據</span>
+                          )}
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
-            {/* Sort */}
+            {viewMode !== 'fav' && (
             <div>
               <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">排序方式</label>
               <div className="grid grid-cols-3 gap-2">
@@ -2241,11 +2400,19 @@
                 })}
               </div>
             </div>
+            )}
 
             {/* Finding a carpark is a question about places, so the same
                 list is also offered on a map. */}
-            <div className="mt-4 grid grid-cols-2 gap-2 bg-gray-100 p-1 rounded-xl">
-              {[{id:'list', l:'清單', icon:'fa-list-ul'}, {id:'map', l:'地圖', icon:'fa-map-location-dot'}].map(function(v) {
+            <div className={'mt-4 grid gap-2 bg-gray-100 p-1 rounded-xl ' +
+              (favParks.length ? 'grid-cols-3' : 'grid-cols-2')}>
+              {(favParks.length
+                ? [{id:'fav', l:'最愛', icon:'fa-star'},
+                   {id:'list', l:'清單', icon:'fa-list-ul'},
+                   {id:'map', l:'地圖', icon:'fa-map-location-dot'}]
+                : [{id:'list', l:'清單', icon:'fa-list-ul'},
+                   {id:'map', l:'地圖', icon:'fa-map-location-dot'}]
+              ).map(function(v) {
                 return (
                   <button key={v.id} onClick={function(){ setViewMode(v.id); }}
                     className={'py-2 text-sm rounded-lg transition-colors flex items-center justify-center space-x-2 ' +
@@ -2309,8 +2476,43 @@
           </div>
           )}
 
+          {/* ── Favourites ── */}
+          {focusParkId === null && shownView === 'fav' && (
+          <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
+            <div className="px-4 py-2 flex justify-between items-center">
+              <span className="text-xs text-gray-500">
+                <i className="fa-solid fa-star text-amber-400 mr-1"></i>
+                最愛停車場（{favList.length}）
+              </span>
+              <button onClick={function(){ setViewMode('list'); }}
+                className="text-[11px] text-emerald-700 hover:text-emerald-900">
+                睇全部停車場 <i className="fa-solid fa-chevron-right text-[8px]"></i>
+              </button>
+            </div>
+
+            {favList.length === 0 ? (
+              <div className="text-center py-14 px-6">
+                <i className="fa-regular fa-star text-4xl mb-3 block text-gray-200"></i>
+                <p className="text-sm text-gray-500 font-medium">仲未有最愛停車場</p>
+                <p className="text-xs mt-2 text-gray-400 leading-relaxed">
+                  喺任何停車場卡片右上角㩒一下★，就會加入呢度，
+                  下次一打開就即刻見到佢哋嘅即時車位。
+                </p>
+                <button onClick={function(){ setViewMode('list'); }}
+                  className="mt-4 px-5 py-2 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 transition-colors">
+                  去揀停車場
+                </button>
+              </div>
+            ) : (
+              <div className="px-4 space-y-3 pb-4">
+                {favList.map(renderParkCard)}
+              </div>
+            )}
+          </div>
+          )}
+
           {/* ── Map ── */}
-          {focusParkId === null && viewMode === 'map' && parksBase.length > 0 && (
+          {focusParkId === null && shownView === 'map' && (
           <div className="relative z-0 flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
             {mapError ? (
               <div className="p-6 text-center text-sm text-gray-500">
@@ -2336,7 +2538,7 @@
           )}
 
           {/* ── Park List ── */}
-          {focusParkId === null && viewMode === 'list' && (
+          {focusParkId === null && shownView === 'list' && (
           <div className="flex-1 overflow-y-auto bg-gray-50 pb-20">
 
             {/* 距離最近 needs a location to sort by */}
