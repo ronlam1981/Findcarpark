@@ -402,12 +402,54 @@
   function customProxyBase() {
     try { return (localStorage.getItem(LS_PROXY_KEY) || '').trim(); } catch (e) { return ''; }
   }
-  function viaCustomProxy(url) {
-    var base = customProxyBase();
+  function buildProxyUrl(base, url) {
+    base = (base || '').trim();
     if (!base) return '';
     return base.indexOf('?') === -1
       ? base.replace(/\/$/, '') + '/?url=' + encodeURIComponent(url)
       : base + encodeURIComponent(url);
+  }
+  function viaCustomProxy(url) {
+    return buildProxyUrl(customProxyBase(), url);
+  }
+
+  /* Checks a relay the user has typed but not yet saved, end to end, and says
+     precisely what went wrong — a wrong URL that silently falls back to the
+     public relays is the easiest way to think this is set up when it is not. */
+  function testProxyBase(base) {
+    base = (base || '').trim();
+    if (!base) return Promise.resolve({ ok: false, msg: '請先填入中轉網址。' });
+    if (base.indexOf('https://') !== 0) {
+      return Promise.resolve({ ok: false, msg: '網址要以 https:// 開頭。' });
+    }
+    var target = API_BASE + '/car_park_maintance';
+    return timedFetch(buildProxyUrl(base, target),
+                      { headers: { 'Authorization': APPCODE } }, FETCH_TIMEOUT)
+      .then(function(r) {
+        if (!r.ok) {
+          return r.text().then(function(t) {
+            return { ok: false, msg: '中轉回應 HTTP ' + r.status + '：' +
+                                     (t || '').replace(/\s+/g, ' ').slice(0, 140) };
+          }, function() {
+            return { ok: false, msg: '中轉回應 HTTP ' + r.status };
+          });
+        }
+        return r.text().then(function(text) {
+          if (!looksLikeCarparkXml(text)) {
+            return { ok: false, msg: '連到中轉，但佢回嘅唔係停車場數據 · ' + describePayload(text) };
+          }
+          var n = parseMaintenanceXml(text).length;
+          if (!n) return { ok: false, msg: '收到數據但解析到 0 個停車場 · ' + describePayload(text) };
+          return { ok: true, msg: '成功！經你個中轉讀到 ' + n + ' 個停車場嘅即時車位。' };
+        });
+      })
+      .catch(function(e) {
+        var m = (e && e.message) || '';
+        if (m === 'timeout') return { ok: false, msg: '逾時：中轉冇回應。檢查網址有冇打錯。' };
+        var origin = (window.location && window.location.origin) || '你個網站';
+        return { ok: false, msg: '連唔到：' + (m || '網絡錯誤') +
+                 '。常見原因：網址打錯，或者 Worker 未准許 ' + origin + ' 呢個來源。' };
+      });
   }
 
   /* APPCODE as a bare query parameter, for relays that drop custom headers. */
@@ -915,6 +957,8 @@
     var [diagCopied, setDiagCopied]           = useState(false);
     var [proxyInput, setProxyInput]           = useState(customProxyBase());
     var [proxySaved, setProxySaved]           = useState(false);
+    var [proxyTesting, setProxyTesting]       = useState(false);
+    var [proxyResult, setProxyResult]         = useState(null);
     var [baseSyncLoading, setBaseSyncLoading] = useState(false);
     var [baseSyncMsg, setBaseSyncMsg]         = useState('');
     var [lastBaseSync, setLastBaseSync]       = useState(storedTs);
@@ -1174,6 +1218,15 @@
         window.prompt('請手動複製：', payload);
       }
     }, [lastErrMsg]);
+
+    var runProxyTest = useCallback(function() {
+      setProxyTesting(true);
+      setProxyResult(null);
+      testProxyBase(proxyInput).then(function(r) {
+        setProxyResult(r);
+        setProxyTesting(false);
+      });
+    }, [proxyInput]);
 
     /* Save the user-controlled relay and immediately retry through it. */
     var saveProxy = useCallback(function() {
@@ -1923,11 +1976,28 @@
                   placeholder="https://xxx.workers.dev/"
                   className="w-full px-2 py-1.5 rounded bg-slate-800 text-white text-xs placeholder-slate-500 border border-slate-600 focus:border-emerald-500 outline-none mb-2"
                 />
-                <button
-                  onClick={saveProxy}
-                  className="w-full py-2 bg-slate-600 hover:bg-slate-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
-                  <i className="fa-solid fa-floppy-disk mr-2"></i>{proxySaved ? '已儲存' : '儲存並重試'}
-                </button>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={runProxyTest}
+                    disabled={proxyTesting}
+                    className="flex-1 py-2 bg-slate-600 hover:bg-slate-500 disabled:opacity-50 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
+                    {proxyTesting
+                      ? <span><i className="fa-solid fa-rotate spin mr-2"></i>測試中…</span>
+                      : <span><i className="fa-solid fa-vial mr-2"></i>測試</span>}
+                  </button>
+                  <button
+                    onClick={saveProxy}
+                    className="flex-1 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-lg text-sm font-medium transition-colors flex items-center justify-center">
+                    <i className="fa-solid fa-floppy-disk mr-2"></i>{proxySaved ? '已儲存' : '儲存'}
+                  </button>
+                </div>
+                {proxyResult && (
+                  <div className={'mt-2 text-[11px] px-2 py-1.5 rounded whitespace-pre-wrap break-all ' +
+                    (proxyResult.ok ? 'bg-green-800 text-green-100' : 'bg-red-800 text-red-100')}>
+                    <i className={'fa-solid mr-1 ' + (proxyResult.ok ? 'fa-circle-check' : 'fa-circle-xmark')}></i>
+                    {proxyResult.msg}
+                  </div>
+                )}
               </div>
 
               <div className="bg-slate-700 rounded-lg p-3">
