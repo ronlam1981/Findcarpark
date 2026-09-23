@@ -1349,6 +1349,7 @@
     var [showSugg, setShowSugg]               = useState(false);
     var [searchLoading, setSearchLoading]     = useState(false);
     var [searchMsg, setSearchMsg]             = useState('');
+    var [searchHelpLink, setSearchHelpLink]   = useState(false);
     var [showSettings, setShowSettings]       = useState(false);
     var [showDiag, setShowDiag]               = useState(false);
     var [statsOpen, setStatsOpen]             = useState(function() {
@@ -1554,6 +1555,7 @@
     var clearFocus = useCallback(function() {
       setFocusParkId(null);
       setSearchMsg('');
+      setSearchHelpLink(false);
       setSearchText('');
       setSuggestions([]);
       setShowSugg(false);
@@ -1562,6 +1564,7 @@
     var handleSearchSubmit = useCallback(function() {
       setShowSugg(false);
       setSearchMsg('');
+      setSearchHelpLink(false);
       var q = searchText.trim();
       if (!q) return;
 
@@ -1590,8 +1593,12 @@
             setSearchMsg('');
           } else {
             /* Saying nothing here was the old behaviour: you pressed 搜尋
-               and the screen simply did not change. */
+               and the screen simply did not change. Place search runs on
+               OpenStreetMap data, not an official Macau street registry —
+               its coverage of small streets and Portuguese-derived names is
+               patchy, so a real address can still come back empty. */
             setSearchMsg('搵唔到「' + q + '」呢個地點。試下打停車場名，或者街道全名（例如「大興街」→「氹仔大興街」）。');
+            setSearchHelpLink(true);
           }
         })
         .catch(function() {
@@ -2820,7 +2827,20 @@
               {searchMsg && (
                 <div className="mt-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 flex items-start">
                   <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
-                  <span>{searchMsg}</span>
+                  <span>
+                    {searchMsg}
+                    {searchHelpLink && (
+                      <span>
+                        {' '}唔肯定條街正確名？可以去
+                        <a href="https://webmap.gis.gov.mo/MapGIS/index.html"
+                          target="_blank" rel="noopener noreferrer"
+                          className="underline font-semibold mx-0.5">
+                          政府地圖繪製暨地籍局官方地圖
+                        </a>
+                        對一對。
+                      </span>
+                    )}
+                  </span>
                 </div>
               )}
 
