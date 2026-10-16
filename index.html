@@ -3,7 +3,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#059669">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="澳門找車位">
   <title>澳門找車位小助手</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="icon" type="image/svg+xml" href="icons/icon.svg">
+  <link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+  <link rel="manifest" href="site.webmanifest">
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
@@ -53,16 +61,18 @@
   const { useState, useEffect, useRef, useMemo, useCallback } = React;
 
   /* ─── Constants ─── */
-  const APPCODE = 'APPCODE 09d43a591fba407fb862412970667de4';
   const API_BASE = 'https://dsat.apigateway.data.gov.mo';
-  const LS_BASE_KEY  = 'mcp_base_v2';
-  const LS_BASE_TS   = 'mcp_base_ts_v2';
+  /* v3 adds official address/contact/entrance/fee fields. User preferences,
+     favourites and histories keep their existing keys untouched. */
+  const LS_BASE_KEY  = 'mcp_base_v3';
+  const LS_BASE_TS   = 'mcp_base_ts_v3';
   const LS_PROXY_KEY = 'mcp_custom_proxy';
   /* 本程式自己嘅中轉，已經內建，用戶唔使自己填。冇咗佢就要靠公共中轉，
      而嗰啲會執笠會收費 —— 要每個用戶自己去開個 Cloudflare 帳戶先用得到，
      等於叫佢哋做開發者。設定入面仍然可以覆蓋，但預設就係呢個。 */
   const DEFAULT_PROXY = 'https://findcarpark-proxy.ronlam1981.workers.dev';
   const LS_HISTORY_KEY = 'mcp_history_v1';
+  const LS_TODAY_KEY = 'mcp_today_v1';
   const LS_HISTORY_OFF = 'mcp_history_off';
   const LS_COLLECT_PLAN = 'mcp_collect_plan';
   const LS_STATS_OPEN = 'mcp_stats_open';
@@ -401,8 +411,18 @@
       var el = items[i];
       var no      = getVal(el, ['CP_ID', 'ID', 'CAR_PARK_NO', 'NO']);
       var cname   = getVal(el, ['NameC', 'CNAME', 'Title', 'NAME']);
-      var addr    = getVal(el, ['ADDRESS_C', 'ADDRESS']);
-      var phone   = getVal(el, ['PHONE', 'TEL']);
+      var addr    = getVal(el, ['LocationC', 'ADDRESS_C', 'ADDRESS']);
+      var phone   = getVal(el, ['ContactNo', 'PHONE', 'TEL']);
+      var entry   = getVal(el, ['CarParkEntryC']);
+      var height  = getVal(el, ['height']).trim();
+      var fees = {
+        light: getVal(el, ['Lcar_price_C']),
+        heavy: getVal(el, ['Hcar_price_C']),
+        moto: getVal(el, ['moto_price_C']),
+        remark: getVal(el, ['remark_price_C'])
+      };
+      var officialZone = getVal(el, ['zone_C']);
+      var officialDistrict = getVal(el, ['subdistrict_C']);
       var pos     = macauCoords(toFloat(getVal(el, ['X_coords', 'LONGITUDE', 'LNG'])),
                                 toFloat(getVal(el, ['Y_coords', 'LATITUDE', 'LAT'])));
       /* Capacity is null when the feed does not publish it, so the card can
@@ -414,8 +434,12 @@
         heavy: toCount(getVal(el, ['TOTAL_HEAVY', 'HEAVY_CAPACITY']))
       };
       if (cname || no) {
+        var heavyOnly = String(no) === '6045' || /上落客區.*重型客車|重型客車.*上落客區/.test(cname);
         var park = { id: no, name: cname || ('停車場 ' + no),
-          address: addr, phone: phone,
+          address: addr, phone: (phone && phone !== '--') ? phone : '',
+          entry: entry, height: (height && !/^[-\s]+$/.test(height)) ? height : '',
+          fees: fees, officialZone: officialZone, officialDistrict: officialDistrict,
+          heavyOnly: heavyOnly,
           lat: pos ? pos.lat : 0, lng: pos ? pos.lng : 0, capacity: cap };
         park.region = zoneOf(park);
         result.push(park);
@@ -423,9 +447,6 @@
     }
     return result;
   }
-
-  /* ─── OLD API (allorigins + token-in-URL, confirmed browser-compatible) ─── */
-  var OLD_MAINT_URL = 'https://api.data.gov.mo/document/download/ea50a770-cc35-47cc-a3ba-7f60092d4bc4?token=5noP7ySJuj4qVTPB0qZdg1pzJQvezRypy&isNeedFile=0&lang=TC';
 
   /* ─── Timed fetch helper ─── */
   function timedFetch(url, opts, timeout) {
@@ -551,20 +572,10 @@
     return run(0);
   }
 
-  /* ─── CORS proxy front-ends ───────────────────────────────────────────
-     This is a static site with no backend, so the official API can only be
-     reached through a relay. Each entry says whether it passes our custom
-     Authorization header through; the ones that do not are paired with the
-     query-parameter form of the credential instead. */
-  function viaCorsProxy(url)    { return 'https://corsproxy.io/?' + encodeURIComponent(url); }
-  function viaAllOriginsRaw(url){ return 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url); }
-  function viaAllOriginsGet(url){ return 'https://api.allorigins.win/get?url=' + encodeURIComponent(url); }
-  function viaCodeTabs(url)     { return 'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(url); }
-
-  /* Optional relay the user controls (e.g. a Cloudflare Worker). Stored in
+  /* Relay the user controls (a Cloudflare Worker). Stored in
      localStorage so it can be set from the settings panel without a redeploy;
-     when present it is tried first, because it is the only route here that
-     does not depend on a third-party free service staying up. */
+     the built-in relay is the default. Credentials stay in its Secret binding
+     and are never placed in this public page or a query string. */
   function customProxyBase() {
     try {
       var v = (localStorage.getItem(LS_PROXY_KEY) || '').trim();
@@ -596,8 +607,7 @@
       return Promise.resolve({ ok: false, msg: '網址要以 https:// 開頭。' });
     }
     var target = API_BASE + '/car_park_maintance';
-    return timedFetch(buildProxyUrl(base, target),
-                      { headers: { 'Authorization': APPCODE } }, FETCH_TIMEOUT)
+    return timedFetch(buildProxyUrl(base, target), {}, FETCH_TIMEOUT)
       .then(function(r) {
         if (!r.ok) {
           return r.text().then(function(t) {
@@ -625,110 +635,35 @@
       });
   }
 
-  /* APPCODE as a bare query parameter, for relays that drop custom headers. */
-  function withAppCode(url) {
-    var code = APPCODE.replace(/^APPCODE\s+/i, '');
-    return url + (url.indexOf('?') === -1 ? '?' : '&') + 'AppCode=' + encodeURIComponent(code);
-  }
-
   function rawXml(url, headers) {
     return timedFetch(url, headers ? { headers: headers } : {}, FETCH_TIMEOUT)
       .then(getRawText).then(requireXml);
   }
-  function wrappedXml(url) {
-    return timedFetch(url, {}, FETCH_TIMEOUT).then(getJson).then(fromAllOrigins);
-  }
-
   /* ─── Fetch realtime maintenance data ─── */
   function fetchMaintenanceXml() {
     var newUrl = API_BASE + '/car_park_maintance';
-    var auth   = APPCODE;
-    var steps  = [];
-
-    if (customProxyBase()) {
-      steps.push({ name: '自設中轉 (即時)', fn: function() {
-        return rawXml(viaCustomProxy(newUrl), { 'Authorization': auth });
-      } });
-    }
-
-    steps.push(
-      /* Header-forwarding routes to the current DSAT endpoint. */
-      { name: 'DSAT 直連', fn: function() {
-          return rawXml(newUrl, { 'Authorization': auth });
-      } },
-      { name: 'corsproxy.io + Authorization', fn: function() {
-          return rawXml(viaCorsProxy(newUrl), { 'Authorization': auth });
-      } },
-      { name: 'corsproxy.io + x-cors-headers', fn: function() {
-          return rawXml(viaCorsProxy(newUrl),
-            { 'x-cors-headers': '{"Authorization":"' + auth + '"}' });
-      } },
-      /* Header-dropping relays, using the query-parameter credential. */
-      { name: 'allorigins/raw + AppCode 參數', fn: function() {
-          return rawXml(viaAllOriginsRaw(withAppCode(newUrl)));
-      } },
-      { name: 'codetabs + AppCode 參數', fn: function() {
-          return rawXml(viaCodeTabs(withAppCode(newUrl)));
-      } },
-      /* Legacy token-in-URL endpoint, which needs no auth header at all. */
-      { name: 'allorigins/raw + 舊版來源', fn: function() {
-          return rawXml(viaAllOriginsRaw(OLD_MAINT_URL));
-      } },
-      { name: 'allorigins/get + 舊版來源', fn: function() {
-          return wrappedXml(viaAllOriginsGet(OLD_MAINT_URL));
-      } },
-      { name: 'codetabs + 舊版來源', fn: function() {
-          return rawXml(viaCodeTabs(OLD_MAINT_URL));
-      } },
-      { name: 'corsproxy.io + 舊版來源', fn: function() {
-          return rawXml(viaCorsProxy(OLD_MAINT_URL));
-      } }
-    );
-
-    return runStrategies('即時車位', steps);
+    return runStrategies('即時車位', [{ name: 'Cloudflare 中轉 (即時)', fn: function() {
+      return rawXml(viaCustomProxy(newUrl));
+    } }]);
   }
 
   /* ─── Fetch base detail data ─── */
   function fetchDetailXml() {
     var url  = API_BASE + '/car_park_detail';
-    var auth = APPCODE;
-    var steps = [];
-
-    if (customProxyBase()) {
-      steps.push({ name: '自設中轉 (基礎)', fn: function() {
-        return rawXml(viaCustomProxy(url), { 'Authorization': auth });
-      } });
-    }
-
-    steps.push(
-      { name: 'DSAT 直連', fn: function() {
-          return rawXml(url, { 'Authorization': auth });
-      } },
-      { name: 'corsproxy.io + Authorization', fn: function() {
-          return rawXml(viaCorsProxy(url), { 'Authorization': auth });
-      } },
-      { name: 'corsproxy.io + x-cors-headers', fn: function() {
-          return rawXml(viaCorsProxy(url),
-            { 'x-cors-headers': '{"Authorization":"' + auth + '"}' });
-      } },
-      { name: 'allorigins/raw + AppCode 參數', fn: function() {
-          return rawXml(viaAllOriginsRaw(withAppCode(url)));
-      } },
-      { name: 'allorigins/get + AppCode 參數', fn: function() {
-          return wrappedXml(viaAllOriginsGet(withAppCode(url)));
-      } },
-      { name: 'codetabs + AppCode 參數', fn: function() {
-          return rawXml(viaCodeTabs(withAppCode(url)));
-      } }
-    );
-
-    return runStrategies('基礎資料', steps);
+    return runStrategies('基礎資料', [{ name: 'Cloudflare 中轉 (基礎)', fn: function() {
+      return rawXml(viaCustomProxy(url));
+    } }]);
   }
 
   /* null means DSAT does not report that vehicle type, which is not the
      same as no free spaces — callers that sort or compare must keep them
      apart, so this returns null rather than 0 in that case. */
   function getVehicleSpaces(park, type) {
+    /* DSAT lists the Tap Seac underground loading bay in the live feed's
+       Car_CNT field even though its official detail says it is only for
+       heavy passenger vehicles. Never turn that technical field into a
+       light-vehicle recommendation. */
+    if (park.heavyOnly && (type === 'light' || type === 'ev' || type === 'moto')) return null;
     if (!park.spaces) return null;
     if (type === 'light') return park.spaces.light;
     if (type === 'moto')  return park.spaces.moto;
@@ -792,8 +727,14 @@
   /* Ignore the noise words nearly every name ends with, plus spacing, so
      they neither help nor hurt a match. */
   function normaliseQuery(q) {
-    return String(q || '').toLowerCase()
+    var text = String(q || '');
+    /* NFKC folds full-width Latin letters/numbers and compatibility
+       punctuation.  It does not invent Chinese aliases, so a fuzzy match
+       still has to be supported by a name/address DSAT actually supplied. */
+    try { text = text.normalize('NFKC'); } catch (e) {}
+    return text.toLowerCase()
       .replace(/[\s\u3000]+/g, '')
+      .replace(/[，,。．.、／/（）()【】\[\]「」『』·・'"`_-]+/g, '')
       .replace(/(停車場|停車塲|車場|parking|carpark)/g, '');
   }
 
@@ -974,7 +915,20 @@
   var HISTORY_MAX_BYTES = 2 * 1024 * 1024;
 
   function slotOf(date) {
-    return date.getDay() * 24 + date.getHours();
+    var p = macauParts(date);
+    return p.dow * 24 + p.hour;
+  }
+
+  function macauParts(date) {
+    var parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Macau', year: 'numeric', month: '2-digit', day: '2-digit',
+      weekday: 'short', hour: '2-digit', hourCycle: 'h23'
+    }).formatToParts(date || new Date());
+    var o = {};
+    parts.forEach(function(p) { o[p.type] = p.value; });
+    var dowMap = { Sun:0, Mon:1, Tue:2, Wed:3, Thu:4, Fri:5, Sat:6 };
+    return { date: o.year + '-' + o.month + '-' + o.day,
+             dow: dowMap[o.weekday], hour: parseInt(o.hour, 10) };
   }
 
   function loadHistory() {
@@ -993,6 +947,43 @@
       localStorage.setItem(LS_HISTORY_KEY, raw);
       return 'ok';
     } catch (e) { return 'quota'; }
+  }
+
+  function loadToday() {
+    try {
+      var o = JSON.parse(localStorage.getItem(LS_TODAY_KEY) || 'null');
+      return (o && typeof o === 'object') ? o : { date:'', parks:{} };
+    } catch (e) { return { date:'', parks:{} }; }
+  }
+  function saveToday(o) {
+    try { localStorage.setItem(LS_TODAY_KEY, JSON.stringify(o)); } catch (e) {}
+  }
+  function addTodaySamples(store, readings, date) {
+    var p = macauParts(date || new Date());
+    var next = (store && store.date === p.date)
+      ? { date: store.date, parks: Object.assign({}, store.parks || {}) }
+      : { date: p.date, parks: {} };
+    readings.forEach(function(r) {
+      if (!r || !r.no) return;
+      var byHour = Object.assign({}, next.parks[r.no] || {});
+      var prev = byHour[p.hour] || [0,0,0,0];
+      if (r.light !== null && r.light !== undefined) { prev[0] += r.light; prev[1] += 1; }
+      if (r.moto !== null && r.moto !== undefined) { prev[2] += r.moto; prev[3] += 1; }
+      byHour[p.hour] = prev;
+      next.parks[r.no] = byHour;
+    });
+    return next;
+  }
+
+  function todaySeries(store, parkId, type, expectedDate) {
+    var out = [], i, park = {};
+    if (store && store.date === expectedDate && store.parks) park = store.parks[parkId] || {};
+    var sumIdx = type === 'moto' ? 2 : 0, nIdx = type === 'moto' ? 3 : 1;
+    for (i = 0; i < 24; i++) {
+      var c = park[i];
+      out.push(c && c[nIdx] ? { avg:c[sumIdx] / c[nIdx], n:c[nIdx] } : { avg:null, n:0 });
+    }
+    return out;
   }
 
   function historyEnabled() {
@@ -1328,6 +1319,7 @@
     });
     var [userAccuracy, setUserAccuracy]       = useState(null);
     var [history, setHistory]                 = useState(loadHistory);
+    var [todayHistory, setTodayHistory]       = useState(loadToday);
     var [recording, setRecording]             = useState(historyEnabled);
     var [historyWarn, setHistoryWarn]         = useState('');
     var [plan, setPlan]                       = useState(loadPlan);
@@ -1336,6 +1328,10 @@
     var [nowTick, setNowTick]                 = useState(Date.now());
     var wakeLockRef = useRef(null);
     var [busyPick, setBusyPick]               = useState(null);
+    var [busyMode, setBusyMode]               = useState('today');
+    var [weeklyOpen, setWeeklyOpen]           = useState(false);
+    var [busyParkId, setBusyParkId]           = useState(null);
+    var [detailParkId, setDetailParkId]       = useState(null);
     var lastRecordRef = useRef(0);
     var planRef = useRef(null);
     var [mapError, setMapError]               = useState('');
@@ -1409,6 +1405,11 @@
                 var r = saveHistory(next);
                 if (r === 'quota') setHistoryWarn('瀏覽器儲存空間滿，繁忙時間紀錄已停止累積。');
                 else if (r === 'too_big') setHistoryWarn('繁忙時間紀錄已達上限，請喺設定清除舊紀錄。');
+                return next;
+              });
+              setTodayHistory(function(prev) {
+                var next = addTodaySamples(prev, arr, new Date());
+                saveToday(next);
                 return next;
               });
               if (onPlan) {
@@ -1486,6 +1487,13 @@
       var timer = setInterval(function() { fetchRealtime(true); }, REALTIME_INTERVAL);
       return function() { clearInterval(timer); };
     }, [fetchRealtime]);
+
+    /* Keep the red Macau "now" marker correct even when no network reading
+       arrives at the top of the hour. */
+    useEffect(function() {
+      var timer = setInterval(function(){ setNowTick(Date.now()); }, 60000);
+      return function(){ clearInterval(timer); };
+    }, []);
 
     /* Ask the relay for what its cron job has gathered. Best-effort: no
        relay, no KV, or an unreachable one all just mean the local history
@@ -1568,8 +1576,35 @@
       var q = searchText.trim();
       if (!q) return;
 
+      var local = searchParks(parksBase, q, 8);
+      var qn = normaliseQuery(q);
+      var exact = null;
+      for (var li = 0; li < local.length; li++) {
+        if (String(local[li].id) === q || normaliseQuery(local[li].name) === qn) {
+          exact = local[li]; break;
+        }
+      }
+      if (exact) { handleSuggClick(exact); return; }
+
+      /* A clearly dominant name match is safe to open.  Address/region
+         matches and close fuzzy matches are candidates only: silently
+         moving the origin to the wrong building is worse than asking for
+         one tap of confirmation.  Enter and the search button therefore
+         use the same ranked candidates as the dropdown. */
       var named = bestNameMatch(parksBase, q);
-      if (named) { handleSuggClick(named); return; }
+      if (named && local.length && String(named.id) === String(local[0].id)) {
+        var first = fuzzyScore(q, named.name);
+        var second = local.length > 1 ? parkSearchScore(local[1], q) : 0;
+        if (first >= 650 && (local.length === 1 || first - second >= 120)) {
+          handleSuggClick(named); return;
+        }
+      }
+      if (local.length && parkSearchScore(local[0], q) > 200) {
+        setSuggestions(local);
+        setShowSugg(true);
+        setSearchMsg('搵到幾個已收錄候選，請揀一個確認；不確定嘅模糊結果唔會自動定位。');
+        return;
+      }
 
       /* Not a carpark name, so treat it as a place: find where it is and
          show what is parked around it. */
@@ -1602,7 +1637,7 @@
           }
         })
         .catch(function() {
-          setSearchMsg('搵地點failed，可能係網絡問題。可以改為直接打停車場名。');
+          setSearchMsg('搵地點失敗，可能係網絡問題。可以改用地圖點選，或者直接打停車場名。');
         })
         .then(function() { setSearchLoading(false); });
     }, [searchText, parksBase, handleSuggClick, viewMode]);
@@ -1725,6 +1760,8 @@
       if (!window.confirm('確定清除所有繁忙時間紀錄？呢啲數據只存喺呢部裝置，清咗唔會復原。')) return;
       try { localStorage.removeItem(LS_HISTORY_KEY); } catch (e) {}
       setHistory({});
+      try { localStorage.removeItem(LS_TODAY_KEY); } catch (e) {}
+      setTodayHistory({ date:'', parks:{} });
       setHistoryWarn('');
       setBusyPick(null);
     }, []);
@@ -1858,11 +1895,16 @@
       var cap = park.capacity ? park.capacity[type] : null;
       var scale = busyScale(prof, cap);
 
+      var mp = macauParts(new Date(nowTick));
+      var sharedToday = fromShared && shared.today ? shared.today : null;
+      var todaySource = sharedToday && sharedToday.date === mp.date ? sharedToday : todayHistory;
+      var todayDaily = todaySeries(todaySource, park.id, type, mp.date);
+      var todayCount = todayDaily.reduce(function(n, c){ return n + c.n; }, 0);
+      var dailySeries = busyMode === 'today' ? todayDaily : prof.daily;
       var maxAvg = 0;
-      prof.daily.forEach(function(c) { if (c.avg !== null && c.avg > maxAvg) maxAvg = c.avg; });
+      dailySeries.forEach(function(c) { if (c.avg !== null && c.avg > maxAvg) maxAvg = c.avg; });
 
-      var now = new Date();
-      var nowDow = now.getDay(), nowHour = now.getHours();
+      var nowDow = mp.dow, nowHour = mp.hour;
 
       var head = (
         <div className="flex items-baseline justify-between mb-1">
@@ -1875,7 +1917,7 @@
         </div>
       );
 
-      if (prof.total < MIN_SAMPLES) {
+      if (prof.total < MIN_SAMPLES && todayCount === 0) {
         return (
           <div className="mt-3 bg-white rounded-2xl border border-gray-100 shadow-sm p-4">
             {head}
@@ -1902,28 +1944,48 @@
       var daily = (
         <div className="mt-3">
           <div className="flex items-baseline justify-between mb-1">
-            <span className="text-[11px] font-semibold text-gray-600">每日時段</span>
+            <span className="text-[11px] font-semibold text-gray-600">
+              {busyMode === 'today' ? '今日實際走勢' : '歷史每日平均'}
+            </span>
             <span className="text-[10px] text-gray-400">平均可用車位（越矮＝越難泊）</span>
           </div>
+          <div className="grid grid-cols-2 gap-1 mb-2 rounded-lg bg-gray-100 p-1">
+            <button onClick={function(){ setBusyMode('today'); setBusyPick(null); }}
+              className={'py-1 rounded text-[10px] ' + (busyMode === 'today' ? 'bg-white text-blue-700 font-bold shadow-sm' : 'text-gray-500')}>
+              今日實際走勢
+            </button>
+            <button onClick={function(){ setBusyMode('average'); setBusyPick(null); }}
+              className={'py-1 rounded text-[10px] ' + (busyMode === 'average' ? 'bg-white text-blue-700 font-bold shadow-sm' : 'text-gray-500')}>
+              歷史平均
+            </button>
+          </div>
           <div className="flex items-end h-24 border-b border-gray-200">
-            {prof.daily.map(function(c, h) {
+            {dailySeries.map(function(c, h) {
               var pct = (c.avg !== null && maxAvg > 0) ? Math.max(3, (c.avg / maxAvg) * 100) : 0;
               var isNow = (h === nowHour);
               return (
                 <button key={h}
-                  onClick={function(){ setBusyPick({ d: null, h: h, c: c }); }}
+                  onClick={function(){ setBusyPick({ d: null, h: h, c: c, mode: busyMode }); }}
                   className="flex-1 mx-px flex flex-col justify-end h-full"
                   title={h + ':00'}>
+                  {isNow && <span className="text-[7px] font-bold text-red-600 mb-0.5">現在</span>}
                   {c.avg === null ? (
-                    <div className="w-full bg-gray-100" style={{height:'2px'}}></div>
+                    <div className="w-full bg-gray-100" style={{height:'2px', outline:isNow ? '2px solid #dc2626' : 'none'}}></div>
                   ) : (
                     <div className="w-full rounded-t"
-                      style={{ height: pct + '%', background: isNow ? '#104281' : '#2a78d6' }}></div>
+                      style={{ height: pct + '%', background:'#2a78d6',
+                               outline:isNow ? '2px solid #dc2626' : 'none' }}></div>
                   )}
                 </button>
               );
             })}
           </div>
+          <p className="mt-1 text-[9px] text-gray-400">
+            {busyMode === 'today'
+              ? '只顯示今日已收集的澳門時間讀數；未來及缺失時段留空。'
+              : '按所有已保存日期的同一小時取平均。'}
+            {' 紅框「現在」只標示當下時間，不代表即時繁忙程度。'}
+          </p>
           <div className="flex text-[9px] text-gray-400 mt-1">
             {[0,6,12,18].map(function(h, i) {
               return <span key={h} className={i === 0 ? 'flex-1' : 'flex-1 text-center'}
@@ -1936,11 +1998,22 @@
       /* Weekday × hour grid, sequential single hue, darker = busier. */
       var weekly = (
         <div className="mt-4">
-          <div className="flex items-baseline justify-between mb-1">
-            <span className="text-[11px] font-semibold text-gray-600">每周分佈</span>
-            <span className="text-[10px] text-gray-400">
-              {scale.usesCapacity ? '佔用率' : '相對繁忙程度'}
+          <button onClick={function(){ setWeeklyOpen(!weeklyOpen); }}
+            className="w-full flex items-center justify-between py-1 text-left" aria-expanded={weeklyOpen}>
+            <span className="text-[11px] font-semibold text-gray-600">
+              <i className={'fa-solid fa-chevron-' + (weeklyOpen ? 'down' : 'right') + ' mr-2 text-[8px]'}></i>
+              每周分佈
             </span>
+            <span className="text-[10px] text-gray-400">
+              {weeklyOpen ? (scale.usesCapacity ? '佔用率' : '相對繁忙程度') : '展開整周'}
+            </span>
+          </button>
+          {weeklyOpen && <React.Fragment>
+          <div className="flex items-center mb-1">
+            <span className="w-4 shrink-0"></span>
+            <div className="flex-1 flex justify-between text-[8px] text-gray-400">
+              {[0,3,6,9,12,15,18,21,23].map(function(h){ return <span key={h}>{h}</span>; })}
+            </div>
           </div>
           {prof.weekly && DOW_ORDER.map(function(d) {
             return (
@@ -1952,11 +2025,11 @@
                     var isNow = (d === nowDow && h === nowHour);
                     return (
                       <button key={h}
-                        onClick={function(){ setBusyPick({ d: d, h: h, c: c }); }}
+                        onClick={function(){ setBusyPick({ d: d, h: h, c: c, busy: b }); }}
                         className="flex-1 mx-px"
                         style={{ height:'13px', background: busyFill(b),
-                                 outline: isNow ? '1.5px solid #111827' : 'none',
-                                 outlineOffset: '-1.5px' }}
+                                 outline: isNow ? '2px solid #dc2626' : 'none',
+                                 outlineOffset: '-1px' }}
                         title={DOW_LABELS[d] + ' ' + h + ':00'}></button>
                     );
                   })}
@@ -1974,6 +2047,8 @@
             <span className="ml-3 w-3 h-2.5 mr-1" style={{background:'#f3f4f6'}}></span>
             <span>未有紀錄</span>
           </div>
+          <p className="mt-1 text-[9px] text-gray-400">紅框為澳門當下星期及小時（現在），只係時間標記；格仔深淺先代表歷史繁忙程度。</p>
+          </React.Fragment>}
         </div>
       );
 
@@ -1981,14 +2056,16 @@
       var readout = pick ? (
         <div className="mt-3 rounded-lg bg-blue-50 border border-blue-100 px-3 py-2 text-[11px] text-blue-900">
           <span className="font-bold">
-            {pick.d === null ? '每日 ' : '星期' + DOW_LABELS[pick.d] + ' '}
+            {pick.d === null ? (busyMode === 'today' ? '今日 ' : '歷史每日平均 ') : '星期' + DOW_LABELS[pick.d] + ' '}
             {pick.h}:00–{pick.h + 1}:00
           </span>
           {pick.c.avg === null
             ? <span className="ml-2 text-blue-700">未有紀錄</span>
             : <span className="ml-2">
-                平均可用 <span className="font-bold">{Math.round(pick.c.avg)}</span> 個{typeLabel}車位
+                {busyMode === 'today' && pick.d === null ? '今日時段平均可用 ' : '平均可用 '}<span className="font-bold">{Math.round(pick.c.avg)}</span> 個{typeLabel}車位
                 <span className="text-blue-600">（{pick.c.n} 次取樣）</span>
+                {pick.d !== null && pick.busy !== null && pick.busy !== undefined &&
+                  <span className="block mt-1 text-blue-700">繁忙程度：約 {Math.round(pick.busy * 100)}%（越高越難泊）</span>}
               </span>}
         </div>
       ) : (
@@ -2005,6 +2082,8 @@
               : '以下係你自己部手機喺開住程式期間記低嘅 ' + prof.total + ' 次讀數，唔會同其他人共享。'}
             {' 唔代表交通事務局嘅官方統計，取樣越多越準。'}
             {!scale.usesCapacity && ' 交通事務局未提供呢個停車場嘅總車位，所以繁忙程度係相對佢自己最空嗰陣計。'}
+            {(prof.total < MIN_SAMPLES || (busyMode === 'today' && todayCount < MIN_SAMPLES)) &&
+              ' 樣本不足，走勢只供參考。'}
           </p>
           {daily}
           {weekly}
@@ -2022,7 +2101,6 @@
         var isFull = vs === 0;
         var noData = !park.spaces;
         var navOpen = activeNavId === park.id;
-        var fi2 = feeInfo();
 
         return (
           <div key={park.id}
@@ -2040,6 +2118,9 @@
                   )}
                   {noData && (
                     <span className="ml-2 align-middle text-[10px] bg-gray-100 text-gray-400 px-2 py-0.5 rounded-full">離線</span>
+                  )}
+                  {park.heavyOnly && (
+                    <span className="ml-2 align-middle text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full">只供重型客車</span>
                   )}
                 </h3>
                 <div className="text-[11px] text-gray-400 mt-0.5">
@@ -2075,9 +2156,9 @@
               )}
               <div className="grid grid-cols-4 gap-1.5">
                 {[
-                  { key:'light', icon:'fa-car',        label:'輕型',  avail: park.spaces ? park.spaces.light  : null, cap: park.capacity ? park.capacity.light : null, sel:'light', ring:'ring-blue-300' },
-                  { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.spaces ? park.spaces.ev     : null, cap: park.capacity ? park.capacity.ev : null, sel:'ev',    ring:'ring-green-300' },
-                  { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.spaces ? park.spaces.moto   : null, cap: park.capacity ? park.capacity.moto : null, sel:'moto',  ring:'ring-orange-300' },
+                  { key:'light', icon:'fa-car',        label:'輕型',  avail: park.heavyOnly ? null : (park.spaces ? park.spaces.light : null), cap: park.capacity ? park.capacity.light : null, sel:'light', ring:'ring-blue-300' },
+                  { key:'ev',    icon:'fa-bolt',       label:'電動',  avail: park.heavyOnly ? null : (park.spaces ? park.spaces.ev : null), cap: park.capacity ? park.capacity.ev : null, sel:'ev',    ring:'ring-green-300' },
+                  { key:'moto',  icon:'fa-motorcycle', label:'電單車', avail: park.heavyOnly ? null : (park.spaces ? park.spaces.moto : null), cap: park.capacity ? park.capacity.moto : null, sel:'moto',  ring:'ring-orange-300' },
                   { key:'heavy', icon:'fa-truck',      label:'重型',  avail: park.spaces ? park.spaces.heavy  : null, cap: park.capacity ? park.capacity.heavy : null, sel:'all',   ring:'ring-slate-300' }
                 ].map(function(item) {
                   var active = vehicleType === item.sel;
@@ -2103,17 +2184,9 @@
 
             {/* Info */}
             <div className="mx-4 mb-2 bg-gray-50 rounded-xl p-2.5 text-xs text-gray-600 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="flex items-center space-x-1">
-                  <i className="fa-solid fa-dollar-sign text-emerald-600"></i>
-                  <span>現時收費</span>
-                  <span className="text-[10px] text-gray-400">({fi2.label})</span>
-                </span>
-                <span className="font-bold text-emerald-700 text-base">${fi2.fee}<span className="text-[10px] font-normal text-gray-500">/小時</span></span>
-              </div>
               <div className="flex items-center space-x-1 text-[11px]">
                 <i className="fa-solid fa-location-dot text-blue-400"></i>
-                <span className="text-gray-500">{park.address}</span>
+                <span className="text-gray-500">{park.address || '交通事務局未提供地址'}</span>
               </div>
               {park.phone && (
                 <div className="flex items-center space-x-1 text-[11px]">
@@ -2125,6 +2198,22 @@
 
             {/* Navigation */}
             <div className="px-4 pb-3">
+              <button onClick={function(){
+                  var opening = String(busyParkId) !== String(park.id);
+                  setBusyParkId(opening ? park.id : null);
+                  setBusyMode('today'); setBusyPick(null); setWeeklyOpen(false);
+                }}
+                aria-expanded={String(busyParkId) === String(park.id)}
+                className="mb-2 w-full flex items-center justify-center space-x-2 py-2 bg-indigo-50 text-indigo-700 rounded-xl text-sm font-medium hover:bg-indigo-100 transition-colors">
+                <i className="fa-solid fa-chart-column"></i>
+                <span>每日／每周繁忙時段</span>
+                <i className={'fa-solid fa-chevron-' +
+                  (String(busyParkId) === String(park.id) ? 'up' : 'down') + ' text-xs'}></i>
+              </button>
+              <button onClick={function(){ setDetailParkId(park.id); setBusyPick(null); setWeeklyOpen(false); }}
+                className="mb-2 w-full flex items-center justify-center space-x-2 py-2 bg-blue-50 text-blue-700 rounded-xl text-sm font-medium hover:bg-blue-100 transition-colors">
+                <i className="fa-solid fa-circle-info"></i><span>查看完整詳情</span>
+              </button>
               <button onClick={function(){ setActiveNavId(navOpen ? null : park.id); }}
                 className="w-full flex items-center justify-center space-x-2 py-2 bg-emerald-50 text-emerald-700 rounded-xl text-sm font-medium hover:bg-emerald-100 transition-colors">
                 <i className="fa-solid fa-diamond-turn-right"></i>
@@ -2148,6 +2237,12 @@
                 </div>
               )}
             </div>
+
+            {String(busyParkId) === String(park.id) && (
+              <div className="px-3 pb-3 overflow-hidden border-t border-indigo-100 bg-indigo-50/30">
+                {renderBusyPanel(park)}
+              </div>
+            )}
           </div>
         );
     }
@@ -2170,6 +2265,10 @@
          region nor the radius should be able to filter it away. */
       if (focusParkId !== null) {
         return list.filter(function(p) { return String(p.id) === String(focusParkId); });
+      }
+
+      if (vehicleType === 'light' || vehicleType === 'ev' || vehicleType === 'moto') {
+        list = list.filter(function(p) { return !p.heavyOnly; });
       }
 
       if (selectedRegion !== '全部') {
@@ -2207,6 +2306,14 @@
       return displayedParks.length ? displayedParks[0] : null;
     }, [displayedParks, focusParkId]);
 
+    var detailPark = useMemo(function() {
+      if (detailParkId === null) return null;
+      for (var i = 0; i < mergedParks.length; i++) {
+        if (String(mergedParks[i].id) === String(detailParkId)) return mergedParks[i];
+      }
+      return null;
+    }, [mergedParks, detailParkId]);
+
     /* A carpark whose coordinates the feed did not publish cannot be placed.
        Counting them lets the map say so instead of quietly dropping them. */
     var mappableParks = useMemo(function() {
@@ -2243,6 +2350,21 @@
           maxZoom: 19,
           attribution: '地圖 © OpenStreetMap 貢獻者｜車位數據 © 澳門交通事務局'
         }).addTo(m);
+        m.on('click', function(e) {
+          if (!e || !e.latlng) return;
+          setFocusParkId(null);
+          setSearchText('');
+          setSuggestions([]);
+          setShowSugg(false);
+          setSearchMsg('已用地圖選點，顯示 1 公里內停車場。');
+          setSearchHelpLink(false);
+          setUserLocation({ lat: e.latlng.lat, lng: e.latlng.lng });
+          setLocationLabel('地圖選點');
+          setUserAccuracy(null);
+          setSelectedRegion('全部');
+          setRadius(1000);
+          setSortBy('distance');
+        });
         mapRef.current = m;
         layerRef.current = L.layerGroup().addTo(m);
       }
@@ -2303,8 +2425,9 @@
           detail.textContent = '詳細';
           detail.style.cssText = 'flex:1;padding:5px 8px;border-radius:8px;border:1px solid #d1d5db;background:#fff;font-size:12px;cursor:pointer';
           detail.addEventListener('click', function() {
-            setFocusParkId(park.id);
-            setViewMode('list');
+            setDetailParkId(park.id);
+            setBusyPick(null);
+            setWeeklyOpen(false);
           });
           var nav = document.createElement('button');
           nav.textContent = '導航';
@@ -2481,32 +2604,32 @@
         <div className="w-full max-w-md bg-white shadow-2xl flex flex-col relative" style={{minHeight:'100vh'}}>
 
           {/* ── Header ── */}
-          <div className="bg-emerald-600 text-white px-5 pt-5 pb-4 shadow-lg z-20">
-            <div className="flex items-center justify-between mb-1">
-              <div className="flex items-center space-x-2">
-                <i className="fa-solid fa-square-parking text-2xl"></i>
-                <h1 className="text-xl font-bold tracking-wide">澳門找車位</h1>
-                <span className="text-[11px] bg-emerald-700 px-2 py-0.5 rounded-full opacity-80">小助手</span>
-              </div>
-              <div className="flex items-center space-x-2">
+          <div className="bg-emerald-600 text-white px-4 sm:px-5 pt-4 sm:pt-5 pb-4 shadow-lg z-20 overflow-hidden">
+            <div className="flex items-center min-w-0">
+              <i className="fa-solid fa-square-parking text-2xl shrink-0"></i>
+              <h1 className="ml-2 text-lg sm:text-xl font-bold tracking-wide whitespace-nowrap">澳門找車位</h1>
+              <span className="ml-2 shrink-0 whitespace-nowrap text-[11px] bg-emerald-700 px-2 py-0.5 rounded-full opacity-80">小助手</span>
+            </div>
+            <div className="flex items-center justify-between gap-2 mt-2 mb-1">
+              <div className="min-w-0">
                 <span className={'text-[10px] px-2 py-1 rounded-full font-semibold ' + badge.cls}>
                   {connStatus === 'ok' || connStatus === 'delayed'
-                    ? <span><i className="fa-solid fa-circle-dot mr-1 text-[8px]"></i>{badge.text}</span>
+                    ? <span className="whitespace-nowrap"><i className="fa-solid fa-circle-dot mr-1 text-[8px]"></i>{badge.text}</span>
                     : badge.text}
                 </span>
-                <button onClick={function(){ setShowSettings(!showSettings); }}
-                  className="w-8 h-8 rounded-full bg-emerald-700 hover:bg-emerald-800 flex items-center justify-center transition-colors">
-                  <i className="fa-solid fa-gear text-sm"></i>
-                </button>
               </div>
+              <button onClick={function(){ setShowSettings(!showSettings); }} aria-label="系統設定"
+                className="w-8 h-8 shrink-0 rounded-full bg-emerald-700 hover:bg-emerald-800 flex items-center justify-center transition-colors">
+                <i className="fa-solid fa-gear text-sm"></i>
+              </button>
             </div>
-            <div className="flex items-center justify-between">
-              <p className="text-emerald-200 text-xs">
+            <div className="flex items-center justify-between gap-2 min-w-0">
+              <p className="text-emerald-200 text-[11px] sm:text-xs truncate min-w-0">
                 {parksBase.length > 0
                   ? '全澳 ' + parksBase.length + ' 個公共停車場'
                   : '正在向交通事務局取得停車場名單…'}
               </p>
-              <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-2 shrink-0">
                 {lastRtTs ? (
                   <p className="text-emerald-300 text-[10px]">
                     更新：{lastRtTs.toLocaleTimeString('zh-MO', {hour:'2-digit',minute:'2-digit',second:'2-digit'})}
@@ -2798,6 +2921,17 @@
               Giving the panel and the map their own layers settles it. */}
           <div className="relative z-30 px-4 pt-4 pb-3 border-b border-gray-100 bg-white">
 
+            <button onClick={function(){
+                setFocusParkId(null); setViewMode('map'); setShowSugg(false);
+              }}
+              className="mb-3 w-full rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-left text-xs text-blue-800 hover:bg-blue-100 transition-colors">
+              <i className="fa-solid fa-map-location-dot mr-2"></i>
+              <span className="font-bold">最快：喺地圖點選目的地</span>
+              <span className="block ml-5 mt-0.5 text-[10px] text-blue-600">
+                唔方便點地圖先搜尋街名或大廈名；模糊候選要由你確認。
+              </span>
+            </button>
+
             {/* Search box */}
             <div className="relative mb-4">
               <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden shadow-sm focus-within:ring-2 focus-within:ring-emerald-400 focus-within:border-emerald-400">
@@ -2891,7 +3025,6 @@
                       className="mt-2 w-full py-2 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 text-xs font-medium hover:bg-blue-100 transition-colors">
                       <i className="fa-solid fa-location-dot mr-1"></i>睇吓呢個停車場附近仲有咩
                     </button>
-                    {renderBusyPanel(focusedPark)}
                   </div>
                 ) : (
                   <div className="text-center text-gray-400 py-8 bg-gray-50 rounded-2xl">
@@ -3181,6 +3314,10 @@
           {/* ── Map ── */}
           {focusParkId === null && shownView === 'map' && (
           <div className="relative z-0 flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
+            <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-800">
+              <i className="fa-solid fa-hand-pointer mr-2"></i>
+              點一下地圖設定目的地，再按距離查看附近停車場。
+            </div>
             {mapError ? (
               <div className="p-6 text-center text-sm text-gray-500">
                 <i className="fa-solid fa-triangle-exclamation text-2xl mb-2 block text-gray-300"></i>
@@ -3278,6 +3415,91 @@
               )}
             </div>
           </div>
+          )}
+
+          {/* One consistent detail surface, opened from search results,
+              ordinary lists and favourites. It deliberately shows a clear
+              placeholder instead of borrowing an unlicensed web photo. */}
+          {detailPark && (
+            <div className="fixed inset-0 z-[2000] bg-black/50 flex items-end sm:items-center justify-center"
+              role="dialog" aria-modal="true" aria-label={detailPark.name + ' 詳情'}>
+              <div className="bg-gray-50 w-full sm:max-w-md max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl shadow-2xl">
+                <div className="sticky top-0 z-10 bg-white border-b border-gray-100 px-4 py-3 flex items-start justify-between">
+                  <div className="pr-3">
+                    <h2 className="font-bold text-gray-900 leading-snug">{detailPark.name}</h2>
+                    <p className="text-[10px] text-gray-400 mt-1">官方編號 {detailPark.id}</p>
+                  </div>
+                  <button onClick={function(){ setDetailParkId(null); }} aria-label="關閉詳情"
+                    className="w-9 h-9 shrink-0 rounded-full bg-gray-100 text-gray-600">
+                    <i className="fa-solid fa-xmark"></i>
+                  </button>
+                </div>
+                <div className="p-4 pb-8">
+                  {detailPark.lat && detailPark.lng ? (
+                    <div>
+                      <iframe title={detailPark.name + ' 位置地圖'}
+                        className="w-full h-40 rounded-2xl border border-slate-200"
+                        src={'https://www.openstreetmap.org/export/embed.html?bbox=' +
+                          (detailPark.lng - 0.003) + '%2C' + (detailPark.lat - 0.002) + '%2C' +
+                          (detailPark.lng + 0.003) + '%2C' + (detailPark.lat + 0.002) +
+                          '&layer=mapnik&marker=' + detailPark.lat + '%2C' + detailPark.lng}
+                        loading="lazy"></iframe>
+                      <p className="mt-1 text-[9px] text-gray-400">位置地圖（非實景照片）· © OpenStreetMap 貢獻者</p>
+                    </div>
+                  ) : null}
+                  <div className="mt-2 rounded-xl bg-slate-100 border border-slate-200 flex items-center text-slate-400 px-3 py-2">
+                    <i className="fa-regular fa-image mr-2"></i>
+                    <span className="text-[10px]">暫未有可核實且可合法展示的實景照片；不使用來源或授權不明圖片。</span>
+                  </div>
+
+                  {detailPark.heavyOnly && (
+                    <div className="mt-3 rounded-xl bg-amber-50 border border-amber-300 px-3 py-2 text-xs text-amber-900">
+                      <i className="fa-solid fa-truck mr-2"></i>
+                      此處是重型客車上落客區，只供重型車輛；不會列入輕型車泊位推薦。
+                    </div>
+                  )}
+
+                  <div className="mt-3 bg-white rounded-2xl border border-gray-100 p-4 text-xs text-gray-700 space-y-3">
+                    <div><span className="font-bold block text-gray-500 mb-1">完整地址</span>{detailPark.address || '交通事務局未提供'}</div>
+                    <div><span className="font-bold block text-gray-500 mb-1">出入口</span>{detailPark.entry || '交通事務局未提供'}</div>
+                    <div><span className="font-bold block text-gray-500 mb-1">電話</span>
+                      {detailPark.phone ? <a className="text-blue-700 underline" href={'tel:' + detailPark.phone.replace(/\s/g,'')}>{detailPark.phone}</a> : '交通事務局未提供'}
+                    </div>
+                    <div><span className="font-bold block text-gray-500 mb-1">官方分區</span>
+                      {[detailPark.officialZone, detailPark.officialDistrict].filter(Boolean).join(' · ') || '交通事務局未提供'}
+                    </div>
+                    <div><span className="font-bold block text-gray-500 mb-1">限高</span>{detailPark.height ? detailPark.height + ' 米' : '交通事務局未提供'}</div>
+                  </div>
+
+                  <div className="mt-3 bg-white rounded-2xl border border-gray-100 p-4 text-xs text-gray-700 space-y-3">
+                    <h3 className="font-bold text-gray-800">官方收費資料</h3>
+                    {[
+                      ['輕型車', detailPark.fees && detailPark.fees.light],
+                      ['重型車', detailPark.fees && detailPark.fees.heavy],
+                      ['電單車', detailPark.fees && detailPark.fees.moto]
+                    ].map(function(row){
+                      var known = row[1] && row[1] !== '-';
+                      return <div key={row[0]}><span className="font-semibold">{row[0]}：</span>
+                        {known ? String(row[1]).split('##').filter(Boolean).join('；') : '未提供／不適用'}
+                      </div>;
+                    })}
+                    <div><span className="font-semibold">備註：</span>
+                      {detailPark.fees && detailPark.fees.remark && detailPark.fees.remark !== '-'
+                        ? String(detailPark.fees.remark).split('##').filter(Boolean).join('；')
+                        : '交通事務局未提供'}
+                    </div>
+                  </div>
+
+                  {renderBusyPanel(detailPark)}
+
+                  <div className="mt-3 text-[10px] text-gray-500 leading-relaxed">
+                    資料來源：澳門特別行政區政府交通事務局「停車場資料」及「停車場即時資訊」開放數據。
+                    地址、電話、出入口及收費均直接讀取官方資料；缺失欄位不作推測。
+                    <a className="ml-1 text-blue-700 underline" href="https://data.gov.mo/" target="_blank" rel="noopener noreferrer">data.gov.mo</a>
+                  </div>
+                </div>
+              </div>
+            </div>
           )}
 
           {/* ── Mock location FAB ── */}
