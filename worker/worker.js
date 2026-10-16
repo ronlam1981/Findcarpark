@@ -26,9 +26,9 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8000',
 ];
 
-/** 交通局 API 嘅 APPCODE。擺喺 Worker 度，前端就唔使自己帶。
- *  建議用 Cloudflare 嘅 Secret 存放（README 有講），env.APPCODE 會蓋過呢個預設值。 */
-const DEFAULT_APPCODE = '09d43a591fba407fb862412970667de4';
+/** 交通局 API 嘅 APPCODE 只可以放喺 Cloudflare Secret。公開原始碼冇後備值，
+ *  避免將憑證提交到 GitHub；現有 env.APPCODE binding 會照常使用。 */
+const DEFAULT_APPCODE = '';
 
 /** 同一條 URL 喺 Cloudflare 邊緣快取幾耐（秒）。
  *  即時車位數據大約每分鐘更新一次，前端每 30 秒問一次，
@@ -95,6 +95,11 @@ function macauSlot(date) {
   return t.getUTCDay() * 24 + t.getUTCHours();
 }
 
+function macauDateHour(date) {
+  const t = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  return { date: t.toISOString().slice(0, 10), hour: t.getUTCHours() };
+}
+
 function foldSamples(store, readings, date) {
   const slot = String(macauSlot(date));
   for (const r of readings) {
@@ -105,6 +110,19 @@ function foldSamples(store, readings, date) {
     if (r.moto  !== null) { cell[2] += r.moto;  cell[3] += 1; }
   }
   return store;
+}
+
+function foldToday(today, readings, date) {
+  const p = macauDateHour(date);
+  const out = today && today.date === p.date ? today : { date: p.date, parks: {} };
+  for (const r of readings) {
+    if (r.light === null && r.moto === null) continue;
+    const park = out.parks[r.id] || (out.parks[r.id] = {});
+    const cell = park[p.hour] || (park[p.hour] = [0, 0, 0, 0]);
+    if (r.light !== null) { cell[0] += r.light; cell[1] += 1; }
+    if (r.moto !== null) { cell[2] += r.moto; cell[3] += 1; }
+  }
+  return out;
 }
 
 async function collectOnce(env) {
@@ -126,6 +144,7 @@ async function collectOnce(env) {
     doc = { startedAt: new Date().toISOString(), samples: 0, slots: {} };
   }
   doc.slots = foldSamples(doc.slots, readings, new Date());
+  doc.today = foldToday(doc.today, readings, new Date());
   doc.samples = (doc.samples || 0) + 1;
   doc.parks = Object.keys(doc.slots).length;
   doc.updatedAt = new Date().toISOString();
