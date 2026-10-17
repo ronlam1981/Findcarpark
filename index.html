@@ -52,6 +52,18 @@
     }
     .cp-me-label::before { border-top-color: #2563eb !important; }
     .leaflet-container { font-family: inherit; }
+    .map-picking > :not(:first-child) { display: none; }
+    .map-crosshair {
+      position: absolute; left: 50%; top: 50%; z-index: 900;
+      width: 34px; height: 34px; margin: -17px 0 0 -17px;
+      pointer-events: none; border: 2px solid #047857; border-radius: 50%;
+      box-shadow: 0 0 0 3px rgba(255,255,255,.9), 0 2px 8px rgba(0,0,0,.25);
+    }
+    .map-crosshair::before, .map-crosshair::after {
+      content: ''; position: absolute; background: #047857;
+    }
+    .map-crosshair::before { width: 2px; height: 46px; left: 14px; top: -8px; }
+    .map-crosshair::after { width: 46px; height: 2px; left: -8px; top: 14px; }
   </style>
 </head>
 <body>
@@ -773,27 +785,16 @@
     return (q.length >= 2 && ratio >= 0.7) ? Math.round(200 * ratio) : 0;
   }
 
-  /* How well one carpark answers the query. The name carries the most
-     weight; an address or district match still counts, but ranks below a
-     name match so it never displaces one. */
+  /* The header search is deliberately name-only. Nearby-place discovery
+     belongs to the map picker; matching ids, addresses or districts here
+     makes a street name look like a carpark result. */
   function parkSearchScore(park, query) {
     var q = String(query || '').trim();
     if (!q) return 0;
-    if (String(park.id) === q) return 2000;
-
-    var best = fuzzyScore(q, park.name);
-    var addr = fuzzyScore(q, park.address);
-    if (addr > 0) addr = Math.max(1, addr - 250);
-    var reg  = fuzzyScore(q, park.region);
-    if (reg > 0) reg = Math.max(1, reg - 350);
-    return Math.max(best, addr, reg);
+    return fuzzyScore(q, park.name);
   }
 
-  /* Pressing 搜尋 has to decide between "they named a carpark" and "they
-     named a place". Any positive score used to count as a carpark, so a
-     street like 大興街 matched some carpark's address and the place lookup
-     never ran. Only a match on the carpark's own name decides it; the
-     weak any-order band (≤200) does not count either. */
+  /* The weak any-order band (≤200) is too uncertain to auto-open. */
   function bestNameMatch(parks, query) {
     var best = null, bestScore = 0;
     for (var i = 0; i < parks.length; i++) {
@@ -1025,10 +1026,9 @@
 
   var COLLECT_EVERY_MS = 30 * 60 * 1000;
   var RADIUS_OPTIONS = [
+    { m: 300,      label: '300米' },
     { m: 500,      label: '500米' },
-    { m: 1000,     label: '1公里' },
-    { m: 2000,     label: '2公里' },
-    { m: Infinity, label: '不限' }
+    { m: 1000,     label: '1公里' }
   ];
 
   var COLLECT_OPTIONS = [
@@ -1289,7 +1289,8 @@
     var [rtLoading, setRtLoading]             = useState(false);
     var [userLocation, setUserLocation]       = useState(null);
     var [locationLabel, setLocationLabel]     = useState('');
-    var [radius, setRadius]                   = useState(1000);
+    var [radius, setRadius]                   = useState(500);
+    var [mapSelecting, setMapSelecting]       = useState(false);
     var [vehicleType, setVehicleType]         = useState('light');
     /* 用戶想兩套官方分區標準都揀得到：'district' 用返 25 個統計分區
        （細，貼近實際街道），'parish' 用 7 個法定堂區（粗，最多人識）。
@@ -1336,6 +1337,7 @@
     var planRef = useRef(null);
     var [mapError, setMapError]               = useState('');
     var mapRef = useRef(null), layerRef = useRef(null), meRef = useRef(null), accRef = useRef(null);
+    var radiusRef = useRef(null), selectingRef = useRef(false);
     var mapElRef = useRef(null), fitKeyRef = useRef('');
     var [gpsError, setGpsError]               = useState(null);
     var [searchText, setSearchText]           = useState('');
@@ -1343,9 +1345,7 @@
     var [focusParkId, setFocusParkId]         = useState(null);
     var [suggestions, setSuggestions]         = useState([]);
     var [showSugg, setShowSugg]               = useState(false);
-    var [searchLoading, setSearchLoading]     = useState(false);
     var [searchMsg, setSearchMsg]             = useState('');
-    var [searchHelpLink, setSearchHelpLink]   = useState(false);
     var [showSettings, setShowSettings]       = useState(false);
     var [showDiag, setShowDiag]               = useState(false);
     var [statsOpen, setStatsOpen]             = useState(function() {
@@ -1362,6 +1362,7 @@
     var [syncReminder, setSyncReminder]       = useState(syncOld);
     var lastRtTsRef = useRef(null);
     lastRtTsRef.current = lastRtTs;
+    selectingRef.current = mapSelecting;
 
     planRef.current = plan;
 
@@ -1523,6 +1524,7 @@
     /* search autocomplete */
     var handleSearchInput = useCallback(function(val) {
       setSearchText(val);
+      setSearchMsg('');
       if (val.length < 1) {
         setSuggestions([]);
         setShowSugg(false);
@@ -1556,14 +1558,42 @@
       setUserLocation({ lat: park.lat, lng: park.lng });
       setLocationLabel('以「' + park.name + '」為中心');
       setSelectedRegion('全部');
-      setRadius(1000);
+      setRadius(500);
       setSortBy('distance');
     }, []);
+
+    var startMapSelection = useCallback(function() {
+      setFocusParkId(null);
+      setShowSugg(false);
+      setViewMode('map');
+      setRadius(function(r) { return (r === 300 || r === 500 || r === 1000) ? r : 500; });
+      setMapSelecting(true);
+      setSearchMsg('');
+    }, []);
+
+    var confirmMapSelection = useCallback(function() {
+      var map = mapRef.current;
+      if (!map) return;
+      var centre = map.getCenter();
+      setUserLocation({ lat: centre.lat, lng: centre.lng });
+      setLocationLabel('地圖選定目的地');
+      setUserAccuracy(null);
+      setSelectedRegion('全部');
+      setSortBy('distance');
+      setMapSelecting(false);
+      setSearchMsg('已鎖定目的地；移動或縮放地圖唔會改變搜尋位置。');
+    }, []);
+
+    var cancelMapSelection = useCallback(function() {
+      setMapSelecting(false);
+      if (mapRef.current && userLocation) {
+        mapRef.current.setView([userLocation.lat, userLocation.lng], mapRef.current.getZoom());
+      }
+    }, [userLocation]);
 
     var clearFocus = useCallback(function() {
       setFocusParkId(null);
       setSearchMsg('');
-      setSearchHelpLink(false);
       setSearchText('');
       setSuggestions([]);
       setShowSugg(false);
@@ -1572,7 +1602,6 @@
     var handleSearchSubmit = useCallback(function() {
       setShowSugg(false);
       setSearchMsg('');
-      setSearchHelpLink(false);
       var q = searchText.trim();
       if (!q) return;
 
@@ -1580,17 +1609,14 @@
       var qn = normaliseQuery(q);
       var exact = null;
       for (var li = 0; li < local.length; li++) {
-        if (String(local[li].id) === q || normaliseQuery(local[li].name) === qn) {
+        if (normaliseQuery(local[li].name) === qn) {
           exact = local[li]; break;
         }
       }
       if (exact) { handleSuggClick(exact); return; }
 
-      /* A clearly dominant name match is safe to open.  Address/region
-         matches and close fuzzy matches are candidates only: silently
-         moving the origin to the wrong building is worse than asking for
-         one tap of confirmation.  Enter and the search button therefore
-         use the same ranked candidates as the dropdown. */
+      /* A clearly dominant name match is safe to open. Close fuzzy name
+         matches remain candidates so the user confirms the intended park. */
       var named = bestNameMatch(parksBase, q);
       if (named && local.length && String(named.id) === String(local[0].id)) {
         var first = fuzzyScore(q, named.name);
@@ -1606,41 +1632,10 @@
         return;
       }
 
-      /* Not a carpark name, so treat it as a place: find where it is and
-         show what is parked around it. */
       setFocusParkId(null);
-      if (viewMode === 'fav') setViewMode('list');
-      setSearchLoading(true);
-      var nomUrl = 'https://nominatim.openstreetmap.org/search?q=' +
-        encodeURIComponent(q + ' 澳門') +
-        '&format=json&limit=1&countrycodes=mo';
-      fetch(nomUrl, { headers: { 'Accept-Language': 'zh' } })
-        .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP_' + r.status)); })
-        .then(function(data) {
-          if (data && data.length > 0) {
-            var item = data[0];
-            setUserLocation({ lat: parseFloat(item.lat), lng: parseFloat(item.lon) });
-            setLocationLabel('地點：' + (item.display_name.split(',')[0] || q));
-            setUserAccuracy(null);
-            setSelectedRegion('全部');
-            setRadius(1000);
-            setSortBy('distance');
-            setSearchMsg('');
-          } else {
-            /* Saying nothing here was the old behaviour: you pressed 搜尋
-               and the screen simply did not change. Place search runs on
-               OpenStreetMap data, not an official Macau street registry —
-               its coverage of small streets and Portuguese-derived names is
-               patchy, so a real address can still come back empty. */
-            setSearchMsg('搵唔到「' + q + '」呢個地點。試下打停車場名、街道全名（例如「大興街」→「氹仔大興街」），或者附近大廈名（街道搵唔到時，大廈名通常較易搵到）。');
-            setSearchHelpLink(true);
-          }
-        })
-        .catch(function() {
-          setSearchMsg('搵地點失敗，可能係網絡問題。可以改用地圖點選，或者直接打停車場名。');
-        })
-        .then(function() { setSearchLoading(false); });
-    }, [searchText, parksBase, handleSuggClick, viewMode]);
+      setSuggestions([]);
+      setSearchMsg('搵唔到名稱符合「' + q + '」嘅停車場。呢度只搜尋停車場名稱；要搵某個位置附近嘅停車場，請用上面「選擇目的地」。');
+    }, [searchText, parksBase, handleSuggClick]);
 
     var historyCount = useMemo(function() { return countSamples(history); }, [history]);
 
@@ -2274,14 +2269,14 @@
       if (selectedRegion !== '全部') {
         list = list.filter(function(p) { return regionOf(p) === selectedRegion; });
       }
-      if (userLocation && radius !== Infinity) {
+      if (userLocation && radius !== Infinity && !mapSelecting) {
         list = list.filter(function(p) { return p.distance !== null && p.distance <= radius; });
       }
 
       list.sort(parkComparator(sortBy, vehicleType));
 
       return list;
-    }, [mergedParks, userLocation, radius, selectedRegion, regionOf, vehicleType, sortBy, focusParkId]);
+    }, [mergedParks, userLocation, radius, selectedRegion, regionOf, vehicleType, sortBy, focusParkId, mapSelecting]);
 
     /* Favourites reuse the decorated rows, so distance and fee read the
        same as anywhere else; ones no longer in the feed simply drop out. */
@@ -2338,7 +2333,7 @@
       if (mapRef.current && mapRef.current.getContainer() !== mapElRef.current) {
         mapRef.current.remove();
         mapRef.current = null; layerRef.current = null;
-        meRef.current = null; accRef.current = null;
+        meRef.current = null; accRef.current = null; radiusRef.current = null;
         fitKeyRef.current = '';
       }
 
@@ -2350,21 +2345,6 @@
           maxZoom: 19,
           attribution: '地圖 © OpenStreetMap 貢獻者｜車位數據 © 澳門交通事務局'
         }).addTo(m);
-        m.on('click', function(e) {
-          if (!e || !e.latlng) return;
-          setFocusParkId(null);
-          setSearchText('');
-          setSuggestions([]);
-          setShowSugg(false);
-          setSearchMsg('已用地圖選點，顯示 1 公里內停車場。');
-          setSearchHelpLink(false);
-          setUserLocation({ lat: e.latlng.lat, lng: e.latlng.lng });
-          setLocationLabel('地圖選點');
-          setUserAccuracy(null);
-          setSelectedRegion('全部');
-          setRadius(1000);
-          setSortBy('distance');
-        });
         mapRef.current = m;
         layerRef.current = L.layerGroup().addTo(m);
       }
@@ -2386,58 +2366,14 @@
             iconSize: [34, 23],
             iconAnchor: [17, 11]
           }),
-          title: park.name
+          title: park.name,
+          bubblingMouseEvents: false
         });
-
-        marker.bindPopup(function() {
-          var box = document.createElement('div');
-          var title = document.createElement('div');
-          title.style.cssText = 'font-weight:700;margin-bottom:4px';
-          title.textContent = park.name;
-          box.appendChild(title);
-
-          if (park.address) {
-            var ad = document.createElement('div');
-            ad.style.cssText = 'color:#6b7280;font-size:11px;margin-bottom:6px';
-            ad.textContent = park.address;
-            box.appendChild(ad);
-          }
-
-          var rows = document.createElement('div');
-          rows.style.cssText = 'font-size:12px;margin-bottom:8px';
-          [['輕型', 'light'], ['電單車', 'moto'], ['電動', 'ev'], ['重型', 'heavy']].forEach(function(pair) {
-            var v = park.spaces ? park.spaces[pair[1]] : null;
-            if (v === null || v === undefined) return;
-            var r = document.createElement('div');
-            r.textContent = pair[0] + '：' + v +
-              (typeof (park.capacity || {})[pair[1]] === 'number' ? ' / ' + park.capacity[pair[1]] : '');
-            rows.appendChild(r);
-          });
-          if (!rows.childNodes.length) {
-            rows.textContent = '未有即時車位數據';
-            rows.style.color = '#9ca3af';
-          }
-          box.appendChild(rows);
-
-          var bar = document.createElement('div');
-          bar.style.cssText = 'display:flex;gap:6px';
-          var detail = document.createElement('button');
-          detail.textContent = '詳細';
-          detail.style.cssText = 'flex:1;padding:5px 8px;border-radius:8px;border:1px solid #d1d5db;background:#fff;font-size:12px;cursor:pointer';
-          detail.addEventListener('click', function() {
-            setDetailParkId(park.id);
-            setBusyPick(null);
-            setWeeklyOpen(false);
-          });
-          var nav = document.createElement('button');
-          nav.textContent = '導航';
-          nav.style.cssText = 'flex:1;padding:5px 8px;border-radius:8px;border:none;background:#059669;color:#fff;font-size:12px;cursor:pointer';
-          nav.addEventListener('click', function() {
-            openMap('google', park.lat, park.lng, park.name);
-          });
-          bar.appendChild(detail); bar.appendChild(nav);
-          box.appendChild(bar);
-          return box;
+        marker.on('click', function() {
+          if (selectingRef.current) return;
+          setDetailParkId(park.id);
+          setBusyPick(null);
+          setWeeklyOpen(false);
         });
 
         marker.addTo(layerRef.current);
@@ -2445,7 +2381,22 @@
 
       if (meRef.current) { map.removeLayer(meRef.current); meRef.current = null; }
       if (accRef.current) { map.removeLayer(accRef.current); accRef.current = null; }
-      if (userLocation) {
+      if (radiusRef.current) { map.removeLayer(radiusRef.current); radiusRef.current = null; }
+      var circleCentre = mapSelecting ? map.getCenter() : userLocation;
+      if (circleCentre && radius !== Infinity && L.circle) {
+        radiusRef.current = L.circle([circleCentre.lat, circleCentre.lng], {
+          radius: radius, color: '#059669', weight: 2,
+          fillColor: '#10b981', fillOpacity: 0.10, interactive: false
+        }).addTo(map);
+      }
+      var followCentre = null;
+      if (mapSelecting && radiusRef.current) {
+        followCentre = function() {
+          if (radiusRef.current) radiusRef.current.setLatLng(map.getCenter());
+        };
+        map.on('move', followCentre);
+      }
+      if (userLocation && !mapSelecting) {
         var label = locationLabel || '我的位置';
         /* How far off the fix might be, drawn rather than left to guess. */
         if (userAccuracy && userAccuracy > 20 && L.circle) {
@@ -2472,14 +2423,15 @@
          so the 30-second refresh does not throw away the user's pan. */
       var key = mappableParks.map(function(p) { return p.id; }).join(',') +
                 '|' + (userLocation ? userLocation.lat + ',' + userLocation.lng : '');
-      if (key !== fitKeyRef.current) {
+      if (!mapSelecting && key !== fitKeyRef.current) {
         fitKeyRef.current = key;
         var pts = mappableParks.map(function(p) { return [p.lat, p.lng]; });
         if (userLocation) pts.push([userLocation.lat, userLocation.lng]);
         if (pts.length === 1) map.setView(pts[0], 16);
         else if (pts.length > 1) map.fitBounds(pts, { padding: [40, 40], maxZoom: 16 });
       }
-    }, [shownView, mappableParks, vehicleType, userLocation, locationLabel, userAccuracy]);
+      return function() { if (map && followCentre) map.off('move', followCentre); };
+    }, [shownView, mappableParks, vehicleType, userLocation, locationLabel, userAccuracy, radius, mapSelecting]);
 
     /* region stats */
     var regionStats = useMemo(function() {
@@ -2919,35 +2871,36 @@
               stacking context between them the map painted over the
               dropdown, so on the map view typing appeared to do nothing.
               Giving the panel and the map their own layers settles it. */}
-          <div className="relative z-30 px-4 pt-4 pb-3 border-b border-gray-100 bg-white">
+          <div className={'relative z-30 px-4 border-b border-gray-100 bg-white ' +
+            (mapSelecting ? 'map-picking py-2' : 'pt-4 pb-3')}>
 
-            <button onClick={function(){
-                setFocusParkId(null); setViewMode('map'); setShowSugg(false);
-              }}
+            <button onClick={startMapSelection}
               className="mb-3 w-full rounded-xl border border-blue-200 bg-blue-50 px-3 py-2.5 text-left text-xs text-blue-800 hover:bg-blue-100 transition-colors">
               <i className="fa-solid fa-map-location-dot mr-2"></i>
-              <span className="font-bold">最快：喺地圖點選目的地</span>
+              <span className="font-bold">選擇目的地</span>
               <span className="block ml-5 mt-0.5 text-[10px] text-blue-600">
-                唔方便點地圖先搜尋街名或大廈名；模糊候選要由你確認。
+                拖動地圖，用中央準星選位置，再確認搜尋。
               </span>
             </button>
 
             {/* Search box */}
             <div className="relative mb-4">
+              <label className="block mb-1.5 text-xs font-semibold text-gray-600" htmlFor="carpark-name-search">
+                搜尋停車場名稱
+              </label>
               <div className="flex items-center border border-gray-300 rounded-xl overflow-hidden shadow-sm focus-within:ring-2 focus-within:ring-emerald-400 focus-within:border-emerald-400">
                 <i className="fa-solid fa-magnifying-glass text-gray-400 ml-3"></i>
                 <input
+                  id="carpark-name-search"
                   type="text"
                   value={searchText}
                   onChange={function(e){ handleSearchInput(e.target.value); }}
                   onKeyDown={function(e){ if(e.key==='Enter') handleSearchSubmit(); }}
                   onFocus={function(){ if(suggestions.length>0) setShowSugg(true); }}
-                  placeholder="搜尋停車場名稱、編號、地址或地標…"
+                  placeholder="搜尋停車場名稱"
                   className="flex-1 py-2.5 px-3 text-sm outline-none bg-transparent"
                 />
-                {searchLoading
-                  ? <i className="fa-solid fa-rotate spin text-emerald-500 mr-3"></i>
-                  : searchText
+                {searchText
                     ? <button onClick={clearFocus}
                         className="mr-3 text-gray-400 hover:text-gray-600">
                         <i className="fa-solid fa-xmark"></i>
@@ -2955,7 +2908,7 @@
                     : null}
                 <button onClick={handleSearchSubmit}
                   className="bg-emerald-600 text-white px-3 py-2.5 text-sm hover:bg-emerald-700 transition-colors">
-                  搜尋
+                  搜尋停車場
                 </button>
               </div>
               {searchMsg && (
@@ -2963,17 +2916,6 @@
                   <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
                   <span>
                     {searchMsg}
-                    {searchHelpLink && (
-                      <span>
-                        {' '}唔肯定條街正確名？可以去
-                        <a href="https://webmap.gis.gov.mo/MapGIS/index.html"
-                          target="_blank" rel="noopener noreferrer"
-                          className="underline font-semibold mx-0.5">
-                          政府地圖繪製暨地籍局官方地圖
-                        </a>
-                        對一對。
-                      </span>
-                    )}
                   </span>
                 </div>
               )}
@@ -3230,7 +3172,7 @@
           </div>
 
           {/* ── Region Stats Bar ── */}
-          {focusParkId === null && parksBase.length > 0 && (
+          {focusParkId === null && parksBase.length > 0 && !mapSelecting && (
           <div className="bg-emerald-50 px-4 py-2.5 border-b border-emerald-100">
             {/* Collapsed by default: the totals are context, and on a phone
                 they pushed the carpark list itself below the fold. */}
@@ -3313,10 +3255,18 @@
 
           {/* ── Map ── */}
           {focusParkId === null && shownView === 'map' && (
-          <div className="relative z-0 flex-1 flex flex-col bg-gray-50" style={{minHeight:'55vh'}}>
-            <div className="px-4 py-2 bg-blue-50 border-b border-blue-100 text-xs text-blue-800">
-              <i className="fa-solid fa-hand-pointer mr-2"></i>
-              點一下地圖設定目的地，再按距離查看附近停車場。
+          <div className="relative z-0 flex-1 flex flex-col bg-gray-50">
+            <div className={'px-4 py-2 border-b text-xs flex items-center justify-between ' +
+              (mapSelecting ? 'bg-emerald-50 border-emerald-100 text-emerald-800' : 'bg-blue-50 border-blue-100 text-blue-800')}>
+              <span>
+                <i className={'fa-solid mr-2 ' + (mapSelecting ? 'fa-crosshairs' : 'fa-location-dot')}></i>
+                {mapSelecting
+                  ? '拖動地圖，中央準星就係目的地；拖放唔會誤觸停車場。'
+                  : (userLocation ? '目的地已鎖定；平移或縮放唔會改變佢。' : '尚未選擇目的地。')}
+              </span>
+              {!mapSelecting && userLocation && (
+                <button onClick={startMapSelection} className="ml-2 shrink-0 underline font-bold">重新選點</button>
+              )}
             </div>
             {mapError ? (
               <div className="p-6 text-center text-sm text-gray-500">
@@ -3324,7 +3274,31 @@
                 {mapError}
               </div>
             ) : (
-              <div ref={mapElRef} className="flex-1" style={{minHeight:'55vh'}}></div>
+              <div className="relative" style={{minHeight:'45vh'}}>
+                <div ref={mapElRef} style={{height:'45vh', minHeight:'45vh'}}></div>
+                {mapSelecting && <div className="map-crosshair" aria-hidden="true"></div>}
+                {mapSelecting && (
+                  <div className="absolute z-[950] left-3 right-3 bottom-3 rounded-2xl bg-white/95 shadow-lg border border-gray-200 p-3">
+                    <div className="grid grid-cols-3 gap-2 mb-2">
+                      {RADIUS_OPTIONS.map(function(o) {
+                        return <button key={o.m} onClick={function(){ setRadius(o.m); }}
+                          className={'py-2 rounded-xl text-xs border ' +
+                            (radius === o.m ? 'bg-emerald-600 border-emerald-600 text-white font-bold' : 'bg-white border-gray-200 text-gray-600')}>
+                          {o.label}
+                        </button>;
+                      })}
+                    </div>
+                    <button onClick={confirmMapSelection}
+                      className="w-full py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-bold shadow-sm">
+                      <i className="fa-solid fa-magnifying-glass-location mr-2"></i>搜尋呢個位置附近停車場
+                    </button>
+                    <button onClick={cancelMapSelection}
+                      className="mt-1.5 w-full py-1.5 text-xs text-gray-500">
+                      取消
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
             <div className="px-4 py-2 bg-white border-t border-gray-100 text-[10px] text-gray-400 leading-relaxed">
               數字 = {vehicleType === 'light' ? '輕型車' : vehicleType === 'moto' ? '電單車' : vehicleType === 'ev' ? '電動車' : '全部車型'}可用車位。
@@ -3338,6 +3312,38 @@
                 </span>
               )}
             </div>
+            {!mapSelecting && userLocation && (
+              <div className="bg-gray-50 border-t border-gray-200 max-h-[38vh] overflow-y-auto">
+                <div className="sticky top-0 z-10 bg-gray-50 px-4 py-2 text-xs text-gray-500 flex justify-between">
+                  <span>{radius === 300 ? '300 米' : radius === 500 ? '500 米' : '1 公里'}內 {displayedParks.length} 個停車場</span>
+                  <span>直線距離</span>
+                </div>
+                {displayedParks.length ? displayedParks.map(function(park) {
+                  var spaces = getVehicleSpaces(park, vehicleType);
+                  return (
+                    <button key={park.id} onClick={function(){ setDetailParkId(park.id); }}
+                      className="w-full px-4 py-3 bg-white border-t border-gray-100 flex items-center text-left active:bg-blue-50">
+                      <span className="flex-1 min-w-0">
+                        <span className="block text-sm font-bold text-gray-800 truncate">{park.name}</span>
+                        <span className="block text-[11px] text-gray-400 truncate">{park.address || '交通事務局未提供地址'}</span>
+                      </span>
+                      <span className="ml-3 text-right shrink-0">
+                        <span className="block text-xs font-bold text-emerald-700">
+                          {park.distance < 1000 ? park.distance + 'm' : (park.distance / 1000).toFixed(1) + 'km'}
+                        </span>
+                        <span className="block text-[10px] text-gray-500">
+                          {spaces === null || spaces === undefined ? '車位未有數據' : '可用 ' + spaces + ' 位'}
+                        </span>
+                      </span>
+                    </button>
+                  );
+                }) : (
+                  <div className="px-4 py-8 text-center text-sm text-gray-400">
+                    呢個範圍內冇停車場；可按「重新選點」或改搜尋半徑。
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           )}
 
@@ -3349,7 +3355,7 @@
             {sortBy === 'distance' && !userLocation && (
               <div className="mx-4 mt-3 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] text-amber-800 flex items-start">
                 <i className="fa-solid fa-circle-info mr-2 mt-0.5 shrink-0"></i>
-                <span>未知你喺邊，暫時排唔到距離。㩒上面「搵車位」開定位，或者搜尋一個地標。</span>
+                <span>未知你喺邊，暫時排唔到距離。㩒上面「搵車位」開定位，或者用「選擇目的地」喺地圖揀位置。</span>
               </div>
             )}
 
