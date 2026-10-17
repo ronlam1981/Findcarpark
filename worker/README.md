@@ -75,7 +75,7 @@ https://findcarpark-proxy.你嘅帳號.workers.dev
 | ❌ 網址要以 https:// 開頭 | 貼漏咗開頭 | 補返 |
 | ❌ 逾時：中轉冇回應 | 網址打錯，或者 Worker 未部署好 | 覆核條網址 |
 | ❌ 連唔到…未准許 …github.io 呢個來源 | Worker 嘅來源白名單冇你個網址 | 見第六節 |
-| ❌ 中轉回應 HTTP 403 | 上游白名單擋咗，或者 APPCODE 唔啱 | 睇訊息內容 |
+| ❌ 中轉回應 HTTP 403 | 要求咗停車場即時／詳情以外嘅網址 | 覆核中轉網址 |
 | ❌ 回嘅唔係停車場數據 | 貼錯咗第二個服務嘅網址 | 覆核條網址 |
 
 **唔會出現「好似成功咗但其實冇用」嘅情況** —— 呢個先係重點。
@@ -86,20 +86,14 @@ https://findcarpark-proxy.你嘅帳號.workers.dev
 
 | 防護 | 做咗咩 |
 |---|---|
-| **上游白名單** | 只准轉發去 `dsat.apigateway.data.gov.mo` 同 `api.data.gov.mo`。冇咗呢層，任何人都可以攞你個 Worker 當萬用跳板去拉佢想拉嘅網站，責任算落你個帳戶 |
+| **上游白名單** | 只接受前端使用嘅兩條 data.gov.mo 停車場 API。其他網址一律拒絕 |
 | **來源白名單** | 只有 `ronlam1981.github.io` 同本機開發網址叫得郁 |
 | **只准 GET / HTTPS** | 其他方法同明文連線一律拒絕 |
-| **APPCODE 收埋** | 可以擺喺 Worker 嘅 Secret，唔使再喺前端網頁曝露 |
+| **官方開放 API** | 主來源係 data.gov.mo 標示「完全開放」嘅結構化 XML API；其公開共用 APPCODE 只由 Worker 使用，前端毋須傳送 |
+| **故障後備** | 官方 API 暫時失效時，先讀交通事務局公開頁；再失敗就讀 KV 最後成功快照 |
 
 ### 換咗網址點算
 改 `worker.js` 最頂 `ALLOWED_ORIGINS` 清單，加一行，再 Deploy 一次。
-
-### 將 APPCODE 改成 Secret（可選，更穩陣）
-- 路線 A：Worker 頁面 → **Settings** → **Variables and Secrets** → **Add** → 揀 **Secret**，
-  Name 填 `APPCODE`，Value 填認證碼 → **Deploy**
-- 路線 B：`npx wrangler secret put APPCODE`
-
-程式會自動優先用呢個 Secret。
 
 ---
 
@@ -174,9 +168,9 @@ https://你個名.workers.dev/?collect=1
 
 | 見到 | 即係 |
 |---|---|
-| `{"ok":true,"parks":91,"samples":1}` | ✅ 成功，已經收集咗一次 |
+| `{"ok":true,"parks":92,"samples":1}` | ✅ 成功，已經收集咗一次（數量以官方當時頁面為準） |
 | `{"ok":false,"reason":"未綁定 KV namespace（HISTORY）"}` | 第 2 步未做好，或者變數名打錯 |
-| `{"ok":false,"reason":"交通事務局回應 HTTP ..."}` | 上游出事，同 KV 無關 |
+| `{"ok":false,"reason":"data.gov.mo 官方 API..."}` | 正式 API、公開頁及最後成功快照均不可用，按訊息檢查上游 |
 
 再打開呢條睇累積數據：
 
@@ -189,7 +183,7 @@ https://你個名.workers.dev/?history=1
 打開網站 → 齒輪 → 應該見到綠色：
 
 > ✅ **中轉定時收集運作中**
-> 累計 N 次讀數，涵蓋 91 個停車場。
+> 累計 N 次讀數，涵蓋官方當時列出嘅停車場。
 
 之後任何停車場嘅「繁忙時間」圖表，右上角會標住「**24 小時收集**」而唔係「本機紀錄」。
 
@@ -202,10 +196,11 @@ https://你個名.workers.dev/?history=1
 
 ---
 
-## 九、萬一部署唔到都唔使驚
+## 九、萬一部署唔到
 
-個程式**仲有 8 條後備途徑**。冇咗你個 Worker，佢會自動跌返落公共中轉，
-照樣運作 —— 只係冇咁穩陣。所以部署 Worker 係**淨賺**，冇下行風險。
+data.gov.mo 會喺「停車場車位資訊」完全開放資料集頁公開共用 APPCODE。
+程式只由 Worker 向官方 API 送出，唔需要前端或使用者設定。保留現有
+`HISTORY` KV，修好 Worker 後再用第七、八節嘅公開端點驗證。
 
 出事就㩒程式入面「未能讀取數據」下面嘅「**連線診斷詳情**」→「**複製**」，
 會連同時間、瀏覽器版本、每條途徑點樣失敗一齊抄低，貼返出嚟就診斷得到。

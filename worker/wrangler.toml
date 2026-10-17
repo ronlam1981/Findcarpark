@@ -23,6 +23,4 @@ crons = ["*/30 * * * *"]
 binding = "HISTORY"
 id = "喺呢度填你自己嘅-KV-namespace-id"
 
-# APPCODE 建議用 Secret 存放，唔好寫死：
-#     npx wrangler secret put APPCODE
-# 冇設定就會用 worker.js 入面嘅預設值。
+# 即時資料以 data.gov.mo「完全開放」停車場 API 為主；公開頁及 KV 快照作後備。

@@ -26,20 +26,25 @@ const ALLOWED_ORIGINS = [
   'http://127.0.0.1:8000',
 ];
 
-/** 交通局 API 嘅 APPCODE 只可以放喺 Cloudflare Secret。公開原始碼冇後備值，
- *  避免將憑證提交到 GitHub；現有 env.APPCODE binding 會照常使用。 */
-const DEFAULT_APPCODE = '';
-
 /** 同一條 URL 喺 Cloudflare 邊緣快取幾耐（秒）。
  *  即時車位數據大約每分鐘更新一次，前端每 30 秒問一次，
  *  快取 15 秒可以減少對交通局伺服器嘅壓力，又唔會覺得數據舊咗。 */
 const CACHE_TTL_SECONDS = 15;
 
-/** 交通事務局即時車位嘅端點，定時收集同轉發都係用佢。 */
+/** data.gov.mo 在「停車場車位資訊」完全開放資料集公開提供的共用調用碼。
+ *  它不是個人／帳戶憑證；只放在 Worker，前端毋須傳送。 */
+const OFFICIAL_APPCODE = '09d43a591fba407fb862412970667de4';
 const MAINTENANCE_URL = 'https://dsat.apigateway.data.gov.mo/car_park_maintance';
+
+const PUBLIC_REALTIME_URL = 'https://www.dsat.gov.mo/dsat/carpark_realtime_core.aspx';
+const PUBLIC_CARPARK_GIS_URL =
+  'https://webmap.gis.gov.mo/arcgis/rest/services/WebMap/MacauMap_T_POI/MapServer/8/query' +
+  '?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=json';
 
 /** KV 入面存累積數據嗰條 key。 */
 const HISTORY_KEY = 'busy_history_v1';
+const LAST_REALTIME_KEY = 'last_realtime_xml_v1';
+const LAST_DETAIL_KEY = 'last_detail_xml_v1';
 
 /* ── 定時收集（Cron Trigger）────────────────────────────────────────
  *
@@ -88,6 +93,235 @@ function parseCarparks(xml) {
   return out;
 }
 
+function decodeHtml(value) {
+  return String(value || '')
+    .replace(/&nbsp;|&#160;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+function stripTags(value) {
+  return decodeHtml(String(value || '').replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ').trim();
+}
+
+function xmlAttr(value) {
+  return String(value === null || value === undefined ? '' : value)
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function publicCount(row, icon) {
+  const re = new RegExp('src="[^"]*' + icon + '[^"]*"[^>]*>[\\s\\S]*?<\\/span>\\s*([^<]+)<\\/div>', 'i');
+  const m = row.match(re);
+  if (!m) return null;
+  const text = stripTags(m[1]);
+  if (!text || text === '-') return null;
+  const n = parseInt(text, 10);
+  return isNaN(n) ? null : n;
+}
+
+/** Parse DSAT's public, server-rendered realtime page. This is the same
+ * information a visitor can read at carpark_realtime.aspx and needs no key. */
+function parsePublicRealtimeHtml(html) {
+  const out = [];
+  const rows = String(html || '').match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+  for (const row of rows) {
+    const idm = row.match(/carpark_detail\.aspx\?id=(\d+)/i);
+    if (!idm) continue;
+    const nameBlock = row.match(/class="carpark_name_text"[^>]*>\s*<div>([\s\S]*?)<\/div>/i);
+    if (!nameBlock) continue;
+    const timeMatch = row.match(/font-size\s*:\s*12px[^>]*>([\s\S]*?)<\/div>/i);
+    out.push({
+      id: idm[1],
+      name: stripTags(nameBlock[1]),
+      light: publicCount(row, 'carpark_car\\.png'),
+      moto: publicCount(row, 'carpark_motor\\.png'),
+      ev: publicCount(row, 'carpark_ecar\\.png'),
+      time: timeMatch ? stripTags(timeMatch[1]) : '',
+    });
+  }
+  return out;
+}
+
+function maintenanceXmlFromPublicHtml(html) {
+  const rows = parsePublicRealtimeHtml(html);
+  const body = rows.map((r) => '<Car_park_info' +
+    ' ID="' + xmlAttr(r.id) + '"' +
+    ' NameC="' + xmlAttr(r.name) + '"' +
+    (r.light === null ? '' : ' Car_CNT="' + r.light + '"') +
+    (r.moto === null ? '' : ' MB_CNT="' + r.moto + '"') +
+    (r.ev === null ? '' : ' EV_CNT="' + r.ev + '"') +
+    ' Time="' + xmlAttr(r.time) + '"/>').join('');
+  return { rows, xml: '<?xml version="1.0" encoding="UTF-8"?><CarPark>' + body + '</CarPark>' };
+}
+
+function normalName(value) {
+  return String(value || '').toLowerCase()
+    .replace(/[()（）·．。,.，\-—_\s]/g, '')
+    .replace(/澳門/g, '').replace(/公共停車場/g, '').replace(/停車場/g, '')
+    .replace(/大廈/g, '').replace(/廣場/g, '');
+}
+
+function findGisFeature(name, features) {
+  const wanted = normalName(name);
+  let best = null;
+  for (const f of features) {
+    const got = normalName(f && f.attributes && f.attributes.CNAME);
+    if (!got) continue;
+    if (got === wanted) return f;
+    if ((got.includes(wanted) || wanted.includes(got)) && (!best || got.length > normalName(best.attributes.CNAME).length)) {
+      best = f;
+    }
+  }
+  return best;
+}
+
+function publicDetailXml(realtimeRows, gisJson) {
+  const features = gisJson && Array.isArray(gisJson.features) ? gisJson.features : [];
+  const matched = new Set();
+  const body = realtimeRows.map((r) => {
+    const f = findGisFeature(r.name, features);
+    const a = f && f.attributes ? f.attributes : {};
+    const g = f && f.geometry ? f.geometry : {};
+    if (f) matched.add(f);
+    return '<Car_park_info' +
+      ' CP_ID="' + xmlAttr(r.id) + '"' +
+      ' NameC="' + xmlAttr(r.name) + '"' +
+      ' LocationC="' + xmlAttr(a.CADDR || '') + '"' +
+      ' ContactNo="' + xmlAttr(a.TEL || '') + '"' +
+      ' CarParkEntryC="' + xmlAttr(a.C_ENTRANCE_EXIT || '') + '"' +
+      (Number.isFinite(g.x) ? ' X_coords="' + g.x + '"' : '') +
+      (Number.isFinite(g.y) ? ' Y_coords="' + g.y + '"' : '') +
+      (a.AMOUNT_LIGHTVEHICLE !== null && a.AMOUNT_LIGHTVEHICLE !== undefined
+        ? ' TOTAL_CAR="' + xmlAttr(a.AMOUNT_LIGHTVEHICLE) + '"' : '') +
+      (a.AMOUNT_MOTOCYCLE !== null && a.AMOUNT_MOTOCYCLE !== undefined
+        ? ' TOTAL_MOTO="' + xmlAttr(a.AMOUNT_MOTOCYCLE) + '"' : '') +
+      (a.AMOUNT_HEAVYVEHICLE !== null && a.AMOUNT_HEAVYVEHICLE !== undefined
+        ? ' TOTAL_HEAVY="' + xmlAttr(a.AMOUNT_HEAVYVEHICLE) + '"' : '') + '/>';
+  }).join('');
+  return {
+    matched: matched.size,
+    total: realtimeRows.length,
+    xml: '<?xml version="1.0" encoding="UTF-8"?><CarPark>' + body + '</CarPark>',
+  };
+}
+
+async function fetchPublicMaintenance() {
+  const res = await fetch(PUBLIC_REALTIME_URL, {
+    headers: { 'Accept': 'text/html' },
+    cf: { cacheTtl: CACHE_TTL_SECONDS, cacheEverything: true },
+  });
+  if (!res.ok) throw new Error('交通事務局公開實時頁回應 HTTP ' + res.status);
+  const parsed = maintenanceXmlFromPublicHtml(await res.text());
+  if (!parsed.rows.length) throw new Error('交通事務局公開實時頁解析到 0 個停車場');
+  return parsed;
+}
+
+async function fetchPublicDetails() {
+  const realtime = await fetchPublicMaintenance();
+  const gisRes = await fetch(PUBLIC_CARPARK_GIS_URL, {
+    headers: { 'Accept': 'application/json' },
+    cf: { cacheTtl: 3600, cacheEverything: true },
+  });
+  if (!gisRes.ok) throw new Error('澳門官方地圖回應 HTTP ' + gisRes.status);
+  const result = publicDetailXml(realtime.rows, await gisRes.json());
+  if (!result.total) throw new Error('公開停車場詳情解析到 0 個停車場');
+  return result;
+}
+
+async function saveLastGood(env, key, xml) {
+  if (!env || !env.HISTORY) return;
+  await env.HISTORY.put(key, JSON.stringify({
+    fetchedAt: new Date().toISOString(),
+    xml,
+  }));
+}
+
+async function readLastGood(env, key, validator) {
+  if (!env || !env.HISTORY) return null;
+  try {
+    const saved = JSON.parse(await env.HISTORY.get(key) || 'null');
+    if (!saved || !saved.xml || !validator(saved.xml)) return null;
+    return { xml: saved.xml, fetchedAt: saved.fetchedAt || '', source: 'KV last-good snapshot' };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchOfficialXml(url) {
+  const res = await fetch(url, {
+    headers: {
+      'Authorization': 'APPCODE ' + OFFICIAL_APPCODE,
+      'Accept': 'application/xml, text/xml, */*',
+    },
+    cf: { cacheTtl: CACHE_TTL_SECONDS, cacheEverything: true },
+  });
+  if (!res.ok) throw new Error('data.gov.mo 官方 API 回應 HTTP ' + res.status);
+  return await res.text();
+}
+
+function validRealtimeXml(xml) {
+  return parseCarparks(xml).length > 0;
+}
+
+function validDetailXml(xml) {
+  return (String(xml || '').match(/<car_park_info\b/gi) || []).length > 0;
+}
+
+/** 正式結構化 API 是主來源；公開網頁和 KV 快照只在上游失效時接力。 */
+async function getRealtimeFeed(env) {
+  try {
+    const xml = await fetchOfficialXml(MAINTENANCE_URL);
+    if (!validRealtimeXml(xml)) throw new Error('data.gov.mo 官方 API 回傳 0 個停車場');
+    await saveLastGood(env, LAST_REALTIME_KEY, xml);
+    return { xml, fetchedAt: new Date().toISOString(), source: 'data.gov.mo official API' };
+  } catch (officialError) {
+    try {
+      const publicFeed = await fetchPublicMaintenance();
+      await saveLastGood(env, LAST_REALTIME_KEY, publicFeed.xml);
+      return {
+        xml: publicFeed.xml,
+        fetchedAt: new Date().toISOString(),
+        source: 'DSAT public realtime page fallback',
+      };
+    } catch (publicError) {
+      const saved = await readLastGood(env, LAST_REALTIME_KEY, validRealtimeXml);
+      if (saved) return saved;
+      throw new Error((officialError && officialError.message) + '；後備亦失敗：' +
+        (publicError && publicError.message));
+    }
+  }
+}
+
+async function getDetailFeed(env, url) {
+  try {
+    const xml = await fetchOfficialXml(url);
+    if (!validDetailXml(xml)) throw new Error('data.gov.mo 官方詳情 API 回傳 0 個停車場');
+    await saveLastGood(env, LAST_DETAIL_KEY, xml);
+    return { xml, fetchedAt: new Date().toISOString(), source: 'data.gov.mo official API' };
+  } catch (officialError) {
+    try {
+      const details = await fetchPublicDetails();
+      await saveLastGood(env, LAST_DETAIL_KEY, details.xml);
+      return {
+        xml: details.xml,
+        fetchedAt: new Date().toISOString(),
+        source: 'DSAT public page + Macau official GIS fallback',
+        matched: details.matched + '/' + details.total,
+      };
+    } catch (publicError) {
+      const saved = await readLastGood(env, LAST_DETAIL_KEY, validDetailXml);
+      if (saved) return saved;
+      throw new Error((officialError && officialError.message) + '；後備亦失敗：' +
+        (publicError && publicError.message));
+    }
+  }
+}
+
 /** 澳門時間 (UTC+8) 嘅「星期*24+小時」。Workers 行喺 UTC，所以要自己加返 8 個鐘，
  *  否則收集到嘅時段會同用戶睇到嘅鐘數差 8 個鐘。 */
 function macauSlot(date) {
@@ -129,13 +363,10 @@ async function collectOnce(env) {
   if (!env || !env.HISTORY) {
     return { ok: false, reason: '未綁定 KV namespace（HISTORY）' };
   }
-  const appcode = (env && env.APPCODE) || DEFAULT_APPCODE;
-  const res = await fetch(MAINTENANCE_URL, {
-    headers: { 'Authorization': 'APPCODE ' + appcode, 'Accept': 'application/xml' },
-  });
-  if (!res.ok) return { ok: false, reason: '交通事務局回應 HTTP ' + res.status };
-
-  const readings = parseCarparks(await res.text());
+  let feed;
+  try { feed = await getRealtimeFeed(env); }
+  catch (e) { return { ok: false, reason: (e && e.message) || '讀唔到官方即時資料' }; }
+  const readings = parseCarparks(feed.xml);
   if (!readings.length) return { ok: false, reason: '解析唔到任何停車場' };
 
   let doc;
@@ -149,7 +380,7 @@ async function collectOnce(env) {
   doc.parks = Object.keys(doc.slots).length;
   doc.updatedAt = new Date().toISOString();
   await env.HISTORY.put(HISTORY_KEY, JSON.stringify(doc));
-  return { ok: true, parks: readings.length, samples: doc.samples };
+  return { ok: true, parks: readings.length, samples: doc.samples, source: feed.source };
 }
 
 /* ── 主程式 ────────────────────────────────────────────────────────── */
@@ -230,47 +461,46 @@ export default {
         cors);
     }
 
-    // 認證：優先用 Worker 自己存嘅 APPCODE；冇設就沿用前端帶嚟嗰個。
-    const appcode = (env && env.APPCODE) || DEFAULT_APPCODE;
-    const headers = { 'Accept': 'application/xml, text/xml, */*' };
-    if (appcode) {
-      headers['Authorization'] = 'APPCODE ' + appcode;
-    } else {
-      const passed = request.headers.get('Authorization');
-      if (passed) headers['Authorization'] = passed;
+    /* data.gov.mo 完全開放資料集的 XML API 是主來源；公開頁及 KV 快照
+       只在官方 API 暫時失效時接力。 */
+    if (upstream.pathname.endsWith('/car_park_maintance')) {
+      try {
+        const feed = await getRealtimeFeed(env);
+        return new Response(feed.xml, {
+          status: 200,
+          headers: Object.assign({
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Cache-Control': 'public, max-age=' + CACHE_TTL_SECONDS,
+            'X-Data-Source': feed.source,
+            'X-Data-Fetched-At': feed.fetchedAt,
+            'X-Upstream-Update-Frequency': '10 seconds',
+          }, cors),
+        });
+      } catch (e) {
+        return fail(502, (e && e.message) || '讀唔到官方即時資料', cors);
+      }
     }
 
-    let res;
-    try {
-      res = await fetch(upstream.toString(), {
-        method: 'GET',
-        headers,
-        cf: { cacheTtl: CACHE_TTL_SECONDS, cacheEverything: true },
-      });
-    } catch (e) {
-      // 交通局伺服器連唔到／逾時，講清楚係邊個環節出事。
-      return fail(502, '連唔到 ' + upstream.hostname + '：' + (e && e.message), cors);
+    if (upstream.pathname.endsWith('/car_park_detail')) {
+      try {
+        const details = await getDetailFeed(env, upstream.toString());
+        const headers = {
+          'Content-Type': 'application/xml; charset=utf-8',
+          'Cache-Control': 'public, max-age=3600',
+          'X-Data-Source': details.source,
+          'X-Data-Fetched-At': details.fetchedAt,
+        };
+        if (details.matched) headers['X-Matched-Carparks'] = details.matched;
+        return new Response(details.xml, {
+          status: 200,
+          headers: Object.assign(headers, cors),
+        });
+      } catch (e) {
+        return fail(502, (e && e.message) || '讀唔到官方停車場詳情', cors);
+      }
     }
 
-    if (!res.ok) {
-      const body = await res.text();
-      return fail(res.status,
-        upstream.hostname + ' 回應 HTTP ' + res.status + '：' + body.slice(0, 300),
-        cors);
-    }
-
-    // Stream the body straight through rather than reading it into a string:
-    // the free plan allows 10 ms of CPU per request, and decoding ~50 KB of
-    // XML on every call spends that budget for no reason. Only the error
-    // path needs the text, and that one is rare.
-    return new Response(res.body, {
-      status: 200,
-      headers: Object.assign({
-        'Content-Type': res.headers.get('Content-Type') || 'application/xml; charset=utf-8',
-        'Cache-Control': 'public, max-age=' + CACHE_TTL_SECONDS,
-        'X-Proxied-Host': upstream.hostname,
-      }, cors),
-    });
+    return fail(403, '只支援停車場即時資料及停車場詳情兩個官方公開來源', cors);
   },
 };
 
@@ -282,7 +512,7 @@ function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-    'Access-Control-Allow-Headers': 'Authorization, Content-Type, x-cors-headers',
+    'Access-Control-Allow-Headers': 'Content-Type, x-cors-headers',
     'Access-Control-Max-Age': '86400',
     'Vary': 'Origin',
   };
@@ -302,3 +532,14 @@ function fail(status, message, cors) {
     headers: Object.assign({ 'Content-Type': 'text/plain; charset=utf-8' }, cors),
   });
 }
+
+// Named exports keep the HTML adapters directly testable without changing
+// the Worker's default fetch/scheduled entry points.
+export {
+  collectOnce,
+  getRealtimeFeed,
+  maintenanceXmlFromPublicHtml,
+  parseCarparks,
+  parsePublicRealtimeHtml,
+  publicDetailXml,
+};
